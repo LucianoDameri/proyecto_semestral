@@ -1,0 +1,38 @@
+# =========================================================
+# .gitignore raiz del monorepo
+# =========================================================
+
+# Variables de entorno (NUNCA al repo)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Maven build
+**/target/
+
+# Node
+**/node_modules/
+**/dist/
+**/build/
+**/.vite/
+
+# Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.backup
+**/*.tfvars
+!**/terraform.tfvars.example
+**/.terraform.lock.hcl
