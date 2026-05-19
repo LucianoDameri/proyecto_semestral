@@ -1,0 +1,52 @@
+# =========================================================
+# .dockerignore - Backend Ventas
+# Optimiza el build context que se envia al daemon de Docker
+# =========================================================
+
+# Build artifacts
+target/
+*.jar
+*.war
+*.ear
+
+# Maven
+.mvn/
+mvnw
+mvnw.cmd
+!pom.xml
+
+# IDE / editor
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.settings/
+.project
+.classpath
+.factorypath
+
+# Logs y archivos temporales
+*.log
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Git / control de versiones
+.git/
+.gitignore
+.gitattributes
+
+# Docker (no incluir Dockerfiles en el contexto)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Variables locales (NUNCA al contenedor)
+.env
+.env.*
+!.env.example
+
+# Tests cache
+.junit/
