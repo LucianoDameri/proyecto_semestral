@@ -1,11 +1,11 @@
 # Innovatech Chile - Plataforma de Despachos
 
-> **ISY1101 - Introduccion a Herramientas DevOps - Evaluacion Parcial N°2**
-> Contenedorizacion, despliegue automatizado en AWS EC2 y CI/CD con GitHub Actions.
+> **ISY1101 - Introducción a Herramientas DevOps - Evaluación Parcial N°2**
+> Contenedorización, despliegue automatizado en AWS EC2 y CI/CD con GitHub Actions.
 
-Proyecto que aplica practicas DevOps reales sobre una solucion de **microservicios**
-para la gestion de ordenes de compra (Ventas) y ordenes de despacho (Despachos),
-con frontend SPA en React y persistencia en MySQL.
+Este repositorio presenta una solución basada en **microservicios** para la
+gestión de **ordenes de compra (Ventas)** y **ordenes de despacho (Despachos)**,
+con un frontend SPA en React y persistencia en MySQL.
 
 ---
 
@@ -17,9 +17,9 @@ con frontend SPA en React y persistencia en MySQL.
                              v
          +----------------- IGW ----------------+
          |                                      |
-         |    Subred Publica  10.0.1.0/24       |
+         |    Subred Pública  10.0.1.0/24       |
          |    +-----------------------------+   |
-         |    | EC2 Frontend  (IP publica)  |   |
+         |    | EC2 Frontend  (IP pública)  |   |
          |    |   docker run nginx + React  |   |
          |    |   puerto host 80            |   |
          |    +--------------+--------------+   |
@@ -44,37 +44,40 @@ con frontend SPA en React y persistencia en MySQL.
                        VPC 10.0.0.0/16
 ```
 
-**Flujo de trafico HTTP:**
+![Diagrama de Arquitectura](https://file.garden/ZAdhH1kUN2HXHCpM/img42.jpg)
+
+**Flujo de tráfico HTTP:**
 
 ```
 Usuario -> http://<EC2-Frontend-IP>/
        -> Nginx (SPA + reverse proxy)
-            +-- /             -> archivos estaticos React
+            +-- /             -> archivos estáticos React
             +-- /api/v1/ventas -> http://<EC2-Backend-IP>:8080
             +-- /api/v1/despachos -> http://<EC2-Backend-IP>:8081
                                        ambos -> mysql en <EC2-DB-IP>:3306
 ```
 
-Solo el frontend es accesible desde internet. Backend y BD viven en subredes
-privadas; salen a internet solo para `docker pull` desde ECR (via NAT Gateway).
+Solo el frontend es accesible desde internet. Backend y base de datos viven en
+subredes privadas; solo acceden a internet para `docker pull` desde ECR mediante
+NAT Gateway.
 
 ---
 
-## Stack tecnologico
+## Stack tecnológico
 
-| Capa            | Tecnologia                                                |
-|-----------------|-----------------------------------------------------------|
-| Frontend        | React 18 + Vite 5 + Tailwind 3 + axios + react-hook-form  |
-| Web server      | Nginx (nginx-unprivileged 1.27 alpine, non-root)          |
-| Backend Ventas  | Java 17 + Spring Boot 3.4 + JPA + Hibernate               |
-| Backend Despachos | Java 17 + Spring Boot 3.4 + JPA + Hibernate             |
-| Base de datos   | MySQL 8.0                                                 |
-| Contenedorizacion | Docker (multi-stage, non-root, healthchecks)            |
-| Orquestacion local | Docker Compose                                         |
-| Infraestructura | Terraform 1.5+ sobre AWS                                  |
-| Registry        | Amazon ECR (3 repos con scan + lifecycle)                 |
-| CI/CD           | GitHub Actions                                            |
-| Deploy en EC2   | AWS Systems Manager (SSM) `send-command`                  |
+| Capa               | Tecnología                                               |
+|--------------------|----------------------------------------------------------|
+| Frontend           | React 18 + Vite 5 + Tailwind 3 + axios + react-hook-form |
+| Web server         | Nginx (nginx-unprivileged 1.27 alpine, non-root)         |
+| Backend Ventas     | Java 17 + Spring Boot 3.4 + JPA + Hibernate              |
+| Backend Despachos  | Java 17 + Spring Boot 3.4 + JPA + Hibernate              |
+| Base de datos      | MySQL 8.0                                                |
+| Contenedorización  | Docker (multi-stage, non-root, healthchecks)             |
+| Orquestación local | Docker Compose                                           |
+| Infraestructura    | Terraform 1.5+ sobre AWS                                 |
+| Registry           | Amazon ECR (3 repos con scan + lifecycle)                |
+| CI/CD              | GitHub Actions                                           |
+| Deploy en EC2      | AWS Systems Manager (SSM) `send-command`                 |
 
 ---
 
@@ -91,10 +94,10 @@ proyecto semestral/
 |   |-- Dockerfile                    # multi-stage, JRE alpine, non-root, healthcheck
 |   |-- .dockerignore
 |   |-- pom.xml                       # Spring Boot 3.4 + Actuator
-|   `-- src/                          # codigo Java + application.properties
+|   `-- src/                          # código Java + application.properties
 |
 |-- back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO/
-|   |-- Dockerfile                    # mismo patron, puerto 8081
+|   |-- Dockerfile                    # mismo patrón, puerto 8081
 |   |-- .dockerignore
 |   |-- pom.xml
 |   `-- src/
@@ -111,13 +114,13 @@ proyecto semestral/
 |   |-- main.tf  vpc.tf  security.tf  ecr.tf  ec2.tf
 |   |-- variables.tf  outputs.tf
 |   |-- terraform.tfvars.example
-|   `-- README.md                     # como aplicar la infra
+|   `-- README.md                     # cómo aplicar la infra
 |
 `-- .github/workflows/                # 3 pipelines CI/CD
     |-- cicd-ventas.yml
     |-- cicd-despachos.yml
     |-- cicd-frontend.yml
-    `-- README.md                     # lista de Secrets + como configurar
+    `-- README.md                     # lista de secrets + cómo configurar
 ```
 
 ---
@@ -133,7 +136,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Una vez levantado (~2 min en la primera build):
+Una vez levantado (~2 minutos en la primera build):
 
 | Servicio              | URL                                       |
 |-----------------------|-------------------------------------------|
@@ -162,7 +165,7 @@ terraform init
 terraform apply
 ```
 
-Outputs utiles:
+Outputs útiles:
 
 ```bash
 terraform output github_secrets_summary
@@ -173,7 +176,7 @@ Detalles en [`infra/README.md`](infra/README.md).
 ### 2. GitHub Secrets
 
 Crear los secrets listados en [`.github/workflows/README.md`](.github/workflows/README.md):
-credenciales AWS, IDs de EC2, URLs de ECR, password de la BD.
+credenciales AWS, IDs de EC2, URLs de ECR y password de la base de datos.
 
 ### 3. Pipeline CI/CD
 
@@ -184,16 +187,16 @@ git checkout -b deploy
 git push origin deploy
 ```
 
-GitHub Actions construye, publica y despliega automaticamente.
-Cualquier cambio futuro a `back-Ventas_SpringBoot/`, `back-Despachos_SpringBoot/`
+GitHub Actions construye, publica y despliega automáticamente.
+Cualquier cambio futuro en `back-Ventas_SpringBoot/`, `back-Despachos_SpringBoot/`
 o `front_despacho/` dispara su pipeline correspondiente.
 
-### 4. Validacion
+### 4. Validación
 
 - Frontend en `http://<EC2_FRONTEND_PUBLIC_IP>/`
 - Crear/listar ventas y despachos desde la UI
 - Verificar persistencia: `docker compose restart` o reiniciar la EC2 de DB,
-  los datos siguen ahi (named volume).
+  los datos siguen ahí (named volume).
 
 ---
 
@@ -257,38 +260,6 @@ volumen vive en `/var/lib/docker/volumes/` del host EC2).
 
 ---
 
-## Como esto cumple la pauta (mapeo)
-
-| Indicador | Donde se demuestra                                             |
-|-----------|----------------------------------------------------------------|
-| **IE1**   | Dockerfiles multi-stage non-root con HEALTHCHECK en 3 servicios|
-| **IE2**   | `docker-compose.yml` con healthchecks, redes, named volume     |
-| **IE3**   | Named volume `innovatech_mysql_data` + justificacion arriba    |
-| **IE4**   | 3 workflows en `.github/workflows/`, trigger en rama `deploy`  |
-| **IE5**   | Frontend en EC2 publica, accesible por IP / DNS                |
-| **IE6**   | Backend en EC2 privada, conecta a EC2 DB por IP privada        |
-| **IE7**   | Nginx reverse proxy + SGs restrictivos = comunicacion segura   |
-| **IE8**   | Este README + sub-READMEs en cada modulo + commits descriptivos|
-
----
-
-## Principios DevOps aplicados
-
-- **Contenedorizacion (Docker)**: 1 imagen por servicio, multi-stage,
-  no-root, healthchecks.
-- **Infrastructure as Code (Terraform)**: toda la infra es reproducible
-  con `terraform apply`. Cero clicks en la consola.
-- **CI/CD (GitHub Actions)**: build + push + deploy automatico ante cada
-  cambio en la rama `deploy`.
-- **Control de versiones (Git)**: ramas `main` (dev) y `deploy` (prod),
-  commits con prefijos convencionales (`feat:`, `fix:`, `chore:`).
-- **Persistencia con volumenes**: la BD sobrevive reinicios.
-- **Observabilidad basica**: `/actuator/health` en backends, logs a
-  stdout/stderr (Docker los captura), CloudWatch retiene 7 dias.
-- **Seguridad por capas**: IMDSv2, SGs minimos, IAM con LabRole, no SSH
-  publico, IDs/passwords en GitHub Secrets.
-
----
 
 ## Autor
 

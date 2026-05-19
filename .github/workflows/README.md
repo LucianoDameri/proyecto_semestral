@@ -1,7 +1,7 @@
 # GitHub Actions - CI/CD Innovatech EP2
 
-Tres pipelines independientes, uno por capa de la aplicacion. Cada uno
-se dispara con un `push` a la rama `deploy` cuando cambian sus archivos.
+Este directorio contiene la documentación de los tres workflows que
+construyen, publican y despliegan cada componente del proyecto.
 
 | Pipeline               | Carpeta vigilada                       | Imagen ECR                  | EC2 destino |
 |------------------------|----------------------------------------|-----------------------------|-------------|
@@ -9,32 +9,32 @@ se dispara con un `push` a la rama `deploy` cuando cambian sus archivos.
 | `cicd-despachos.yml`   | `back-Despachos_SpringBoot/**`         | `innovatech-despachos`      | Backend     |
 | `cicd-frontend.yml`    | `front_despacho/**`                    | `innovatech-frontend`       | Frontend    |
 
-Flujo: **Build -> Push a ECR -> Deploy via SSM `send-command`**.
+Flujo: **Build → Push a ECR → Deploy via SSM `send-command`**.
 
-No usamos SSH ni claves `.pem`. La autenticacion es 100% IAM gracias a
+No se usa SSH ni claves `.pem`. La autenticación es 100% IAM gracias al
 `LabInstanceProfile` adjunto a las EC2 (configurado por Terraform).
 
 ## GitHub Secrets requeridos
 
-Crear en **Settings -> Secrets and variables -> Actions -> New repository secret**:
+Crear en **Settings → Secrets and variables → Actions → New repository secret**.
 
-### Credenciales AWS Academy (caducan ~4h, hay que actualizarlas)
+### Credenciales AWS Academy (caducan ~4h)
 
-| Secret                  | Donde sacarlo                                           |
-|-------------------------|---------------------------------------------------------|
-| `AWS_ACCESS_KEY_ID`     | AWS Details -> AWS CLI (Learner Lab)                    |
-| `AWS_SECRET_ACCESS_KEY` | AWS Details -> AWS CLI                                  |
-| `AWS_SESSION_TOKEN`     | AWS Details -> AWS CLI                                  |
+| Secret                  | Origen                                               |
+|-------------------------|------------------------------------------------------|
+| `AWS_ACCESS_KEY_ID`     | AWS Details → AWS CLI (Learner Lab)                  |
+| `AWS_SECRET_ACCESS_KEY` | AWS Details → AWS CLI                                 |
+| `AWS_SESSION_TOKEN`     | AWS Details → AWS CLI                                 |
 
 ### Recursos AWS (outputs de Terraform)
 
-Despues de `terraform apply`, corre:
+Después de `terraform apply`, ejecutar:
 
 ```bash
 terraform -chdir=infra output -json github_secrets_summary
 ```
 
-Y copia cada valor:
+Copiar cada valor a su secret correspondiente:
 
 | Secret                | Output Terraform              |
 |-----------------------|-------------------------------|
@@ -45,40 +45,40 @@ Y copia cada valor:
 | `EC2_BACKEND_ID`      | `ec2_backend_id`              |
 | `EC2_DATABASE_ID`     | `ec2_database_id`             |
 
-### Configuracion app
+### Configuración de aplicación
 
 | Secret        | Valor                                     |
 |---------------|-------------------------------------------|
-| `DB_PASSWORD` | mismo password usado en `terraform.tfvars`|
-| `DB_NAME`     | `innovatech` (o lo que pusiste)           |
+| `DB_PASSWORD` | mismo password usado en `terraform.tfvars` |
+| `DB_NAME`     | `innovatech` (o el valor elegido)         |
 
-## Como funciona el deploy
+## Cómo funciona el deploy
 
-1. Push a `deploy` -> GitHub Actions arranca el workflow correspondiente.
-2. `docker build` con tag `${SHA::7}` + `latest`.
+1. Push a `deploy` → GitHub Actions inicia el workflow correspondiente.
+2. `docker build` con tags `latest` y `${SHA::7}`.
 3. `docker push` a Amazon ECR.
-4. `aws ssm send-command` ejecuta dentro de la EC2:
-   - login a ECR (con credenciales del LabInstanceProfile, no del runner)
+4. `aws ssm send-command` ejecuta en la EC2:
+   - login a ECR (con el LabInstanceProfile, no con el runner)
    - `docker pull` de la imagen `latest`
-   - `docker stop` + `docker rm` del contenedor viejo
-   - `docker run` del contenedor nuevo con env vars y puertos correctos
-5. El workflow espera al SSM y trae stdout/stderr al log de Actions.
+   - `docker stop` + `docker rm` del contenedor antiguo
+   - `docker run` del contenedor nuevo con las variables y puertos correctos
+5. El workflow espera al SSM y recoge stdout/stderr en el log de Actions.
 
 ## Trigger manual
 
-Cada workflow tiene `workflow_dispatch`. Desde **Actions** se puede correr
-en cualquier rama con el boton **Run workflow**.
+Cada workflow incluye `workflow_dispatch`. Desde **Actions** es posible ejecutar
+el workflow manualmente en cualquier rama con el botón **Run workflow**.
 
 ## Tagging y trazabilidad
 
-Cada build deja DOS tags en ECR:
+Cada build deja dos tags en ECR:
 
-- `latest` -> el ultimo deploy (lo que esta corriendo)
-- `<sha7>` -> commit exacto, para rollback (`docker pull repo:<sha7>`)
+- `latest` → último deploy en producción
+- `<sha7>` → commit exacto, útil para rollback
 
-## Rollback rapido
+## Rollback rápido
 
-Desde la EC2 (via SSM Session Manager):
+Desde la EC2 usando SSM Session Manager:
 
 ```bash
 aws ecr describe-images --repository-name innovatech-ventas \
