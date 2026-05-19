@@ -2,8 +2,8 @@
 # .gitignore raiz del monorepo
 # =========================================================
 
-# Variables de entorno (NUNCA al repo)
-.env
+# Variables de entorno
+# .env  ← rastreado intencionalmente (repo privado, proyecto académico)
 .env.local
 .env.*.local
 

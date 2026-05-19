@@ -1,0 +1,158 @@
+# =========================================================
+# docker-compose.yml - Stack Innovatech Chile (ISY1101 EP2)
+# =========================================================
+# Levanta los 4 servicios del proyecto:
+#   - mysql      (base de datos compartida)
+#   - ventas     (microservicio Ventas    - puerto 8080)
+#   - despachos  (microservicio Despachos - puerto 8081)
+#   - frontend   (React + Nginx           - puerto 3000 host -> 8080 container)
+#
+# Uso:
+#   1) Copiar .env.example a .env y editar credenciales
+#   2) docker compose up --build
+#   3) Abrir http://localhost:3000
+# =========================================================
+
+services:
+  # -----------------------------------------------------
+  # MySQL 8 - base de datos compartida por ambos backends
+  # -----------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: innovatech-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+    # Solo exponemos 3306 al host para inspeccion local con DBeaver/Workbench.
+    # En produccion (EC2) este puerto NO se publica a internet (subred privada).
+    ports:
+      - "3306:3306"
+    volumes:
+      # Named volume gestionado por Docker:
+      #  - Persistencia: los datos sobreviven docker compose down/up.
+      #  - Portabilidad: no depende de una ruta del host (como un bind mount),
+      #    asi el stack se comporta igual en Windows, macOS, Linux y EC2.
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-u",
+          "root",
+          "-p${DB_PASSWORD}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - innovatech-net
+
+  # -----------------------------------------------------
+  # Microservicio Ventas (Spring Boot 3.4 + Java 17)
+  # -----------------------------------------------------
+  ventas:
+    build:
+      context: ./back-Ventas_SpringBoot/Springboot-API-REST
+      dockerfile: Dockerfile
+    image: innovatech/ventas-api:${IMAGE_TAG:-1.0}
+    container_name: innovatech-ventas
+    restart: unless-stopped
+    environment:
+      DB_ENDPOINT: mysql
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME}
+      DB_USERNAME: root
+      DB_PASSWORD: ${DB_PASSWORD}
+      SERVER_PORT: 8080
+      JAVA_OPTS: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - innovatech-net
+
+  # -----------------------------------------------------
+  # Microservicio Despachos (Spring Boot 3.4 + Java 17)
+  # -----------------------------------------------------
+  despachos:
+    build:
+      context: ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+      dockerfile: Dockerfile
+    image: innovatech/despachos-api:${IMAGE_TAG:-1.0}
+    container_name: innovatech-despachos
+    restart: unless-stopped
+    environment:
+      DB_ENDPOINT: mysql
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME}
+      DB_USERNAME: root
+      DB_PASSWORD: ${DB_PASSWORD}
+      SERVER_PORT: 8081
+      JAVA_OPTS: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+    ports:
+      - "8081:8081"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - innovatech-net
+
+  # -----------------------------------------------------
+  # Frontend (React 18 + Vite 5 servido por Nginx)
+  # -----------------------------------------------------
+  frontend:
+    build:
+      context: ./front_despacho
+      dockerfile: Dockerfile
+      args:
+        # En el bundle de produccion las llamadas axios apuntan a rutas
+        # relativas (mismo host), y Nginx hace el reverse proxy.
+        VITE_API_URL: ""
+    image: innovatech/despacho-frontend:${IMAGE_TAG:-1.0}
+    container_name: innovatech-frontend
+    restart: unless-stopped
+    environment:
+      # nginx (envsubst) sustituye estas variables en nginx.conf al iniciar.
+      # En compose usamos los nombres DNS de la red Docker.
+      VENTAS_HOST: "ventas:8080"
+      DESPACHOS_HOST: "despachos:8081"
+    ports:
+      # Host 3000 -> contenedor 8080 (nginx-unprivileged escucha en 8080).
+      - "3000:8080"
+    depends_on:
+      ventas:
+        condition: service_started
+      despachos:
+        condition: service_started
+    networks:
+      - innovatech-net
+
+# =========================================================
+# Volumenes
+# =========================================================
+volumes:
+  mysql_data:
+    name: innovatech_mysql_data
+    # Justificacion: usamos NAMED VOLUME (no bind mount) porque
+    #  1) Persistencia desacoplada del host - no rompe en distintos SO.
+    #  2) Mejor rendimiento I/O (filesystem nativo de Docker vs FS del host).
+    #  3) Backups y migraciones via 'docker volume' son mas simples.
+    #  4) En EC2 el volumen vive en la maquina, no en una ruta especifica.
+
+# =========================================================
+# Redes
+# =========================================================
+networks:
+  innovatech-net:
+    name: innovatech-net
+    driver: bridge
+    # Red bridge dedicada - los servicios se resuelven por nombre DNS
+    # (ej. el backend Ventas se conecta a 'mysql:3306' directamente).
