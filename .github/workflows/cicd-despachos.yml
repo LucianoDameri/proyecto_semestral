@@ -1,0 +1,123 @@
+name: CI/CD Despachos
+
+# =========================================================
+# Pipeline del microservicio DESPACHOS
+# =========================================================
+# Mismo patron que Ventas pero apunta al codigo de Despachos
+# y publica/corre el contenedor en el puerto 8081.
+# =========================================================
+
+on:
+  push:
+    branches: [deploy]
+    paths:
+      - "back-Despachos_SpringBoot/**"
+      - ".github/workflows/cicd-despachos.yml"
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  SERVICE_NAME: despachos
+  CONTAINER_PORT: 8081
+  HOST_PORT: 8081
+  BUILD_CONTEXT: ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+
+jobs:
+  build-push-deploy:
+    name: Build, push y deploy Despachos
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        env:
+          ECR_REPO: ${{ secrets.ECR_REPO_DESPACHOS }}
+        run: |
+          IMAGE_SHA=${ECR_REPO}:${GITHUB_SHA::7}
+          IMAGE_LATEST=${ECR_REPO}:latest
+          docker build \
+            --platform linux/amd64 \
+            -t "$IMAGE_SHA" \
+            -t "$IMAGE_LATEST" \
+            "${{ env.BUILD_CONTEXT }}"
+          echo "IMAGE_SHA=$IMAGE_SHA"     >> $GITHUB_ENV
+          echo "IMAGE_LATEST=$IMAGE_LATEST" >> $GITHUB_ENV
+
+      - name: Push image to ECR
+        run: |
+          docker push "$IMAGE_SHA"
+          docker push "$IMAGE_LATEST"
+
+      - name: Resolve database private IP
+        id: db-ip
+        run: |
+          DB_IP=$(aws ec2 describe-instances \
+            --instance-ids "${{ secrets.EC2_DATABASE_ID }}" \
+            --query 'Reservations[0].Instances[0].PrivateIpAddress' \
+            --output text)
+          echo "DB_IP=$DB_IP" >> $GITHUB_OUTPUT
+
+      - name: Deploy on EC2 (SSM)
+        env:
+          DB_IP: ${{ steps.db-ip.outputs.DB_IP }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          set -e
+
+          CMD=$(cat <<EOF
+          set -eux
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
+            | sudo docker login --username AWS --password-stdin ${ECR_REGISTRY}
+          sudo docker pull ${IMAGE_LATEST}
+          sudo docker stop ${{ env.SERVICE_NAME }} || true
+          sudo docker rm ${{ env.SERVICE_NAME }} || true
+          sudo docker run -d \
+            --name ${{ env.SERVICE_NAME }} \
+            --restart unless-stopped \
+            -p ${{ env.HOST_PORT }}:${{ env.CONTAINER_PORT }} \
+            -e DB_ENDPOINT=${DB_IP} \
+            -e DB_PORT=3306 \
+            -e DB_NAME=${DB_NAME} \
+            -e DB_USERNAME=root \
+            -e DB_PASSWORD='${DB_PASSWORD}' \
+            -e SERVER_PORT=${{ env.CONTAINER_PORT }} \
+            ${IMAGE_LATEST}
+          sudo docker image prune -f
+          EOF
+          )
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_BACKEND_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy ${SERVICE_NAME} ${GITHUB_SHA::7}" \
+            --parameters commands="$CMD" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM CommandId: $CMD_ID"
+
+          aws ssm wait command-executed \
+            --command-id "$CMD_ID" \
+            --instance-id "${{ secrets.EC2_BACKEND_ID }}" || true
+
+          aws ssm get-command-invocation \
+            --command-id "$CMD_ID" \
+            --instance-id "${{ secrets.EC2_BACKEND_ID }}" \
+            --query '{Status:Status, StdOut:StandardOutputContent, StdErr:StandardErrorContent}' \
+            --output json

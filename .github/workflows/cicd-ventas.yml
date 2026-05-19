@@ -1,0 +1,149 @@
+name: CI/CD Ventas
+
+# =========================================================
+# Pipeline del microservicio VENTAS
+# =========================================================
+# Disparador: push a la rama 'deploy' cuando cambia el codigo del
+# backend Ventas o este mismo workflow.
+#
+# Flujo: build de imagen Docker -> push a ECR -> deploy en EC2 backend
+# usando AWS SSM send-command (sin SSH, solo IAM/SSM).
+# =========================================================
+
+on:
+  push:
+    branches: [deploy]
+    paths:
+      - "back-Ventas_SpringBoot/**"
+      - ".github/workflows/cicd-ventas.yml"
+  workflow_dispatch: {} # permite ejecutarlo manual desde la pestana Actions
+
+env:
+  AWS_REGION: us-east-1
+  SERVICE_NAME: ventas
+  CONTAINER_PORT: 8080
+  HOST_PORT: 8080
+  BUILD_CONTEXT: ./back-Ventas_SpringBoot/Springboot-API-REST
+
+jobs:
+  build-push-deploy:
+    name: Build, push y deploy Ventas
+    runs-on: ubuntu-latest
+
+    steps:
+      # ---------------------------------------------
+      # 1. Checkout del codigo
+      # ---------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------
+      # 2. Configurar credenciales AWS (Learner Lab usa token de sesion)
+      # ---------------------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      # ---------------------------------------------
+      # 3. Login a Amazon ECR (genera credenciales temporales para docker push)
+      # ---------------------------------------------
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ---------------------------------------------
+      # 4. Build de la imagen multi-stage (con tag por SHA + latest)
+      # ---------------------------------------------
+      - name: Build Docker image
+        env:
+          ECR_REPO: ${{ secrets.ECR_REPO_VENTAS }}
+        run: |
+          IMAGE_SHA=${ECR_REPO}:${GITHUB_SHA::7}
+          IMAGE_LATEST=${ECR_REPO}:latest
+          docker build \
+            --platform linux/amd64 \
+            -t "$IMAGE_SHA" \
+            -t "$IMAGE_LATEST" \
+            "${{ env.BUILD_CONTEXT }}"
+          echo "IMAGE_SHA=$IMAGE_SHA"     >> $GITHUB_ENV
+          echo "IMAGE_LATEST=$IMAGE_LATEST" >> $GITHUB_ENV
+
+      # ---------------------------------------------
+      # 5. Push de ambos tags a ECR
+      # ---------------------------------------------
+      - name: Push image to ECR
+        run: |
+          docker push "$IMAGE_SHA"
+          docker push "$IMAGE_LATEST"
+
+      # ---------------------------------------------
+      # 6. Obtener IP privada de la EC2 de la base de datos
+      # ---------------------------------------------
+      - name: Resolve database private IP
+        id: db-ip
+        run: |
+          DB_IP=$(aws ec2 describe-instances \
+            --instance-ids "${{ secrets.EC2_DATABASE_ID }}" \
+            --query 'Reservations[0].Instances[0].PrivateIpAddress' \
+            --output text)
+          echo "DB_IP=$DB_IP" >> $GITHUB_OUTPUT
+          echo "DB privada: $DB_IP"
+
+      # ---------------------------------------------
+      # 7. Deploy en EC2 Backend via SSM send-command
+      # ---------------------------------------------
+      - name: Deploy on EC2 (SSM)
+        env:
+          DB_IP: ${{ steps.db-ip.outputs.DB_IP }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          set -e
+
+          CMD=$(cat <<EOF
+          set -eux
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
+            | sudo docker login --username AWS --password-stdin ${ECR_REGISTRY}
+          sudo docker pull ${IMAGE_LATEST}
+          sudo docker stop ${{ env.SERVICE_NAME }} || true
+          sudo docker rm ${{ env.SERVICE_NAME }} || true
+          sudo docker run -d \
+            --name ${{ env.SERVICE_NAME }} \
+            --restart unless-stopped \
+            -p ${{ env.HOST_PORT }}:${{ env.CONTAINER_PORT }} \
+            -e DB_ENDPOINT=${DB_IP} \
+            -e DB_PORT=3306 \
+            -e DB_NAME=${DB_NAME} \
+            -e DB_USERNAME=root \
+            -e DB_PASSWORD='${DB_PASSWORD}' \
+            -e SERVER_PORT=${{ env.CONTAINER_PORT }} \
+            ${IMAGE_LATEST}
+          sudo docker image prune -f
+          EOF
+          )
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_BACKEND_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy ${SERVICE_NAME} ${GITHUB_SHA::7}" \
+            --parameters commands="$CMD" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM CommandId: $CMD_ID"
+
+          # Espera a que termine y muestra el resultado
+          aws ssm wait command-executed \
+            --command-id "$CMD_ID" \
+            --instance-id "${{ secrets.EC2_BACKEND_ID }}" || true
+
+          aws ssm get-command-invocation \
+            --command-id "$CMD_ID" \
+            --instance-id "${{ secrets.EC2_BACKEND_ID }}" \
+            --query '{Status:Status, StdOut:StandardOutputContent, StdErr:StandardErrorContent}' \
+            --output json
