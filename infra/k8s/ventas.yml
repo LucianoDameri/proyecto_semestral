@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ventas
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app: ventas
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ventas
+spec:
+  selector:
+    matchLabels:
+      app: ventas
+  template:
+    metadata:
+      labels:
+        app: ventas
+    spec:
+      containers:
+      - name: ventas
+        image: <IMAGE_VENTAS>
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DB_ENDPOINT
+          value: mysql
+        - name: DB_PORT
+          value: "3306"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: name
+        - name: DB_USERNAME
+          value: root
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: password
+        - name: SERVER_PORT
+          value: "8080"

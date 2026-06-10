@@ -1,0 +1,84 @@
+name: CI/CD Kubernetes Deployment
+on:
+  push:
+    branches: [deploy]
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: innovatech-cluster
+  # Contextos para docker build
+  CONTEXT_FRONTEND: ./front_despacho
+  CONTEXT_VENTAS: ./back-Ventas_SpringBoot/Springboot-API-REST
+  CONTEXT_DESPACHOS: ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Get Account ID
+        run: |
+          echo "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_ENV
+
+      - name: Build and Push Images
+        run: |
+          # Define Repos usando la variable de entorno del shell
+          F_ECR=${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/frontend
+          V_ECR=${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ventas
+          D_ECR=${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/despachos
+          
+          # Build & Push Frontend
+          docker buildx build --platform linux/amd64 -t $F_ECR:${{ github.sha }} ${{ env.CONTEXT_FRONTEND }} --push
+          # Build & Push Ventas
+          docker buildx build --platform linux/amd64 -t $V_ECR:${{ github.sha }} ${{ env.CONTEXT_VENTAS }} --push
+          # Build & Push Despachos
+          docker buildx build --platform linux/amd64 -t $D_ECR:${{ github.sha }} ${{ env.CONTEXT_DESPACHOS }} --push
+          
+          echo "FRONTEND_IMAGE=$F_ECR:${{ github.sha }}" >> $GITHUB_ENV
+          echo "VENTAS_IMAGE=$V_ECR:${{ github.sha }}" >> $GITHUB_ENV
+          echo "DESPACHOS_IMAGE=$D_ECR:${{ github.sha }}" >> $GITHUB_ENV
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update Kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+      - name: Create DB Secret in K8s
+        run: |
+          kubectl create secret generic db-secrets \
+            --from-literal=password='${{ secrets.DB_PASSWORD }}' \
+            --from-literal=name='${{ secrets.DB_NAME }}' \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply Kubernetes Manifests
+        run: |
+          kubectl apply -f infra/k8s/
+
+      - name: Update Images
+        run: |
+          kubectl set image deployment/frontend frontend=${FRONTEND_IMAGE}
+          kubectl set image deployment/ventas ventas=${VENTAS_IMAGE}
+          kubectl set image deployment/despachos despachos=${DESPACHOS_IMAGE}
+
+      - name: Verify Rollout
+        run: |
+          kubectl rollout status deployment/frontend
+          kubectl rollout status deployment/ventas
+          kubectl rollout status deployment/despachos
