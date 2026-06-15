@@ -24,6 +24,9 @@ env:
   CONTAINER_PORT: 8080
   HOST_PORT: 8080
   ECR_REPO_NAME: innovatech-ventas
+  EC2_BACKEND_ID: i-0cd24a848b764c272
+  EC2_DATABASE_ID: i-0b9d20ffad0fdfabc
+  DB_NAME: innovatech
 
 jobs:
   cd:
@@ -54,7 +57,7 @@ jobs:
         id: db-ip
         run: |
           DB_IP=$(aws ec2 describe-instances \
-            --instance-ids "${{ vars.EC2_DATABASE_ID }}" \
+            --instance-ids "${{ env.EC2_DATABASE_ID }}" \
             --query 'Reservations[0].Instances[0].PrivateIpAddress' \
             --output text)
           echo "DB_IP=$DB_IP" >> "$GITHUB_OUTPUT"
@@ -65,7 +68,7 @@ jobs:
           IMAGE_LATEST: ${{ steps.vars.outputs.image_latest }}
           DB_IP:        ${{ steps.db-ip.outputs.DB_IP }}
           DB_PASSWORD:  ${{ secrets.DB_PASSWORD }}
-          DB_NAME:      ${{ vars.DB_NAME }}
+          DB_NAME:      ${{ env.DB_NAME }}
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
           set -e
@@ -97,7 +100,7 @@ jobs:
           PARAMS=$(jq -n --arg cmd "$CMD" '{commands: [$cmd]}')
 
           CMD_ID=$(aws ssm send-command \
-            --instance-ids "${{ vars.EC2_BACKEND_ID }}" \
+            --instance-ids "${{ env.EC2_BACKEND_ID }}" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy ${{ env.SERVICE_NAME }} ${GITHUB_SHA::7}" \
             --parameters "$PARAMS" \
@@ -108,10 +111,10 @@ jobs:
 
           aws ssm wait command-executed \
             --command-id "$CMD_ID" \
-            --instance-id "${{ vars.EC2_BACKEND_ID }}" || true
+            --instance-id "${{ env.EC2_BACKEND_ID }}" || true
 
           aws ssm get-command-invocation \
             --command-id "$CMD_ID" \
-            --instance-id "${{ vars.EC2_BACKEND_ID }}" \
+            --instance-id "${{ env.EC2_BACKEND_ID }}" \
             --query '{Status:Status, StdOut:StandardOutputContent, StdErr:StandardErrorContent}' \
             --output json
