@@ -116,10 +116,11 @@ proyecto semestral/
 |   |-- terraform.tfvars.example
 |   `-- README.md                     # cómo aplicar la infra
 |
-`-- .github/workflows/                # 3 pipelines CI/CD
-    |-- cicd-ventas.yml
-    |-- cicd-despachos.yml
-    |-- cicd-frontend.yml
+`-- .github/workflows/                # pipelines CI/CD (1 CI + 1 CD por servicio)
+    |-- ci-ventas.yml      / cd-ventas.yml
+    |-- ci-despachos.yml   / cd-despachos.yml
+    |-- ci-frontend.yml    / cd-frontend.yml
+    |-- cd-mysql.yml                  # bootstrap manual de la BD
     `-- README.md                     # lista de secrets + cómo configurar
 ```
 
@@ -173,10 +174,11 @@ terraform output github_secrets_summary
 
 Detalles en [`infra/README.md`](infra/README.md).
 
-### 2. GitHub Secrets
+### 2. GitHub Secrets y Variables
 
-Crear los secrets listados en [`.github/workflows/README.md`](.github/workflows/README.md):
-credenciales AWS, IDs de EC2, URLs de ECR y password de la base de datos.
+Configurar 4 secrets (credenciales AWS Academy + `DB_PASSWORD`) y las
+variables no sensibles (IDs de EC2, `DB_NAME`) según
+[`.github/workflows/README.md`](.github/workflows/README.md).
 
 ### 3. Pipeline CI/CD
 
@@ -254,13 +256,4 @@ volumen vive en `/var/lib/docker/volumes/` del host EC2).
 
 - 3 Security Groups encadenados (frontend -> backend -> db): cada capa solo
   acepta trafico de la capa superior. Principio de **least privilege**.
-- Backend y DB en subredes privadas: ningun acceso directo desde internet.
-- NAT Gateway para que las privadas alcancen ECR/SSM sin perder
-  aislamiento de entrada.
-
----
-
-
-## Autor
-
-Luciano - ISY1101 EP2 - 2025
+- Backend y DB en subredes privadas: ni

@@ -1,7 +1,7 @@
-name: CI/CD MySQL (bootstrap)
+name: MySQL - CD (Bootstrap/Deploy)
 
 # =========================================================
-# Workflow manual para arrancar / actualizar el contenedor
+# Workflow manual (CD) para arrancar / actualizar el contenedor
 # MySQL en la EC2 DB. Solo se dispara manualmente o cuando
 # se cambia el script.
 # Usa volumen 'innovatech_mysql_data' para persistir datos.
@@ -22,7 +22,7 @@ env:
 
 jobs:
   deploy-mysql:
-    name: Levantar MySQL en EC2 DB
+    name: "CD - Levantar MySQL en EC2 DB"
     runs-on: ubuntu-latest
 
     steps:
@@ -36,29 +36,40 @@ jobs:
 
       - name: Deploy MySQL via SSM
         env:
-          INSTANCE_ID: ${{ secrets.EC2_DATABASE_ID }}
-          DB_NAME:     ${{ secrets.DB_NAME }}
+          INSTANCE_ID: ${{ vars.EC2_DATABASE_ID }}
+          DB_NAME:     ${{ vars.DB_NAME }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           MYSQL_TAG:   ${{ inputs.mysql_tag }}
         run: |
+          set -e
+
+          CMD=$(cat <<EOF
+          set -e
+          docker volume create ${VOLUME_NAME} || true
+          docker stop ${CONTAINER_NAME} || true
+          docker rm   ${CONTAINER_NAME} || true
+          docker pull mysql:${MYSQL_TAG}
+          docker run -d --name ${CONTAINER_NAME} --restart unless-stopped \
+            -e MYSQL_ROOT_PASSWORD='${DB_PASSWORD}' \
+            -e MYSQL_DATABASE=${DB_NAME} \
+            -e MYSQL_ROOT_HOST=% \
+            -p 3306:3306 \
+            -v ${VOLUME_NAME}:/var/lib/mysql \
+            --log-opt max-size=10m --log-opt max-file=3 \
+            mysql:${MYSQL_TAG} --bind-address=0.0.0.0
+          EOF
+          )
+
+          # Construir el JSON de parametros con jq: el shorthand
+          # "commands=[...]" manual era fragil con caracteres especiales
+          # (comillas, puntos en la password, etc.)
+          PARAMS=$(jq -n --arg cmd "$CMD" '{commands: [$cmd]}')
+
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "Bootstrap MySQL $MYSQL_TAG" \
-            --parameters commands="[
-              \"set -e\",
-              \"docker volume create $VOLUME_NAME || true\",
-              \"docker stop $CONTAINER_NAME || true\",
-              \"docker rm   $CONTAINER_NAME || true\",
-              \"docker pull mysql:$MYSQL_TAG\",
-              \"docker run -d --name $CONTAINER_NAME --restart unless-stopped \
-                -e MYSQL_ROOT_PASSWORD=$DB_PASSWORD \
-                -e MYSQL_DATABASE=$DB_NAME \
-                -p 3306:3306 \
-                -v $VOLUME_NAME:/var/lib/mysql \
-                --log-opt max-size=10m --log-opt max-file=3 \
-                mysql:$MYSQL_TAG --bind-address=0.0.0.0\"
-            ]" \
+            --parameters "$PARAMS" \
             --query "Command.CommandId" --output text)
 
           echo "SSM Command ID: $CMD_ID"

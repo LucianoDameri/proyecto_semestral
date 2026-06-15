@@ -1,37 +1,37 @@
-name: CI/CD Frontend
+name: Ventas - CD (Deploy)
 
 # =========================================================
-# Pipeline del FRONTEND (React + Nginx)
+# CD del microservicio VENTAS
 # =========================================================
-# Build de la imagen, push a ECR, deploy en la EC2 publica.
-# El contenedor recibe VENTAS_HOST y DESPACHOS_HOST apuntando
-# a la IP privada de la EC2 Backend (resuelta dinamicamente).
+# Se dispara automaticamente cuando termina con exito el workflow
+# "Ventas - CI (Build & Push)" (ci-ventas.yml) en la rama 'deploy',
+# o manualmente via workflow_dispatch.
+#
+# Recalcula la URL de la imagen ':latest' en ECR (no depende de
+# outputs del otro workflow) y la despliega en la EC2 backend via
+# AWS SSM send-command.
 # =========================================================
 
 on:
-  push:
-    branches: [deploy]
-    paths:
-      - "front_despacho/**"
-      - ".github/workflows/cicd-frontend.yml"
+  workflow_run:
+    workflows: ["Ventas - CI (Build & Push)"]
+    types: [completed]
   workflow_dispatch: {}
 
 env:
   AWS_REGION: us-east-1
-  SERVICE_NAME: frontend
+  SERVICE_NAME: ventas
   CONTAINER_PORT: 8080
-  HOST_PORT: 80
-  BUILD_CONTEXT: ./front_despacho
+  HOST_PORT: 8080
+  ECR_REPO_NAME: innovatech-ventas
 
 jobs:
-  build-push-deploy:
-    name: Build, push y deploy Frontend
+  cd:
+    name: "CD - Deploy Ventas"
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -44,39 +44,28 @@ jobs:
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
-        env:
-          ECR_REPO: ${{ secrets.ECR_REPO_FRONTEND }}
+      - name: Set image vars
+        id: vars
         run: |
-          IMAGE_SHA=${ECR_REPO}:${GITHUB_SHA::7}
-          IMAGE_LATEST=${ECR_REPO}:latest
-          docker build \
-            --platform linux/amd64 \
-            --build-arg VITE_API_URL="" \
-            -t "$IMAGE_SHA" \
-            -t "$IMAGE_LATEST" \
-            "${{ env.BUILD_CONTEXT }}"
-          echo "IMAGE_SHA=$IMAGE_SHA"     >> $GITHUB_ENV
-          echo "IMAGE_LATEST=$IMAGE_LATEST" >> $GITHUB_ENV
+          ECR_REPO="${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO_NAME }}"
+          echo "image_latest=${ECR_REPO}:latest" >> "$GITHUB_OUTPUT"
 
-      - name: Push image to ECR
+      - name: Resolve database private IP
+        id: db-ip
         run: |
-          docker push "$IMAGE_SHA"
-          docker push "$IMAGE_LATEST"
-
-      - name: Resolve backend private IP
-        id: backend-ip
-        run: |
-          BACKEND_IP=$(aws ec2 describe-instances \
-            --instance-ids "${{ secrets.EC2_BACKEND_ID }}" \
+          DB_IP=$(aws ec2 describe-instances \
+            --instance-ids "${{ vars.EC2_DATABASE_ID }}" \
             --query 'Reservations[0].Instances[0].PrivateIpAddress' \
             --output text)
-          echo "BACKEND_IP=$BACKEND_IP" >> $GITHUB_OUTPUT
-          echo "Backend privado: $BACKEND_IP"
+          echo "DB_IP=$DB_IP" >> "$GITHUB_OUTPUT"
+          echo "DB privada: $DB_IP"
 
       - name: Deploy on EC2 (SSM)
         env:
-          BACKEND_IP: ${{ steps.backend-ip.outputs.BACKEND_IP }}
+          IMAGE_LATEST: ${{ steps.vars.outputs.image_latest }}
+          DB_IP:        ${{ steps.db-ip.outputs.DB_IP }}
+          DB_PASSWORD:  ${{ secrets.DB_PASSWORD }}
+          DB_NAME:      ${{ vars.DB_NAME }}
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
           set -e
@@ -92,18 +81,26 @@ jobs:
             --name ${{ env.SERVICE_NAME }} \
             --restart unless-stopped \
             -p ${{ env.HOST_PORT }}:${{ env.CONTAINER_PORT }} \
-            -e VENTAS_HOST=${BACKEND_IP}:8080 \
-            -e DESPACHOS_HOST=${BACKEND_IP}:8081 \
+            -e DB_ENDPOINT=${DB_IP} \
+            -e DB_PORT=3306 \
+            -e DB_NAME=${DB_NAME} \
+            -e DB_USERNAME=root \
+            -e DB_PASSWORD='${DB_PASSWORD}' \
+            -e SERVER_PORT=${{ env.CONTAINER_PORT }} \
             ${IMAGE_LATEST}
           sudo docker image prune -f
           EOF
           )
 
+          # Construir el JSON de parametros con jq: el shorthand
+          # "commands=$CMD" de la AWS CLI falla con strings multilinea.
+          PARAMS=$(jq -n --arg cmd "$CMD" '{commands: [$cmd]}')
+
           CMD_ID=$(aws ssm send-command \
-            --instance-ids "${{ secrets.EC2_FRONTEND_ID }}" \
+            --instance-ids "${{ vars.EC2_BACKEND_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy ${SERVICE_NAME} ${GITHUB_SHA::7}" \
-            --parameters commands="$CMD" \
+            --comment "Deploy ${{ env.SERVICE_NAME }} ${GITHUB_SHA::7}" \
+            --parameters "$PARAMS" \
             --query 'Command.CommandId' \
             --output text)
 
@@ -111,10 +108,10 @@ jobs:
 
           aws ssm wait command-executed \
             --command-id "$CMD_ID" \
-            --instance-id "${{ secrets.EC2_FRONTEND_ID }}" || true
+            --instance-id "${{ vars.EC2_BACKEND_ID }}" || true
 
           aws ssm get-command-invocation \
             --command-id "$CMD_ID" \
-            --instance-id "${{ secrets.EC2_FRONTEND_ID }}" \
+            --instance-id "${{ vars.EC2_BACKEND_ID }}" \
             --query '{Status:Status, StdOut:StandardOutputContent, StdErr:StandardErrorContent}' \
             --output json

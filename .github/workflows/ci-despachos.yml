@@ -1,0 +1,63 @@
+name: Despachos - CI (Build & Push)
+
+# =========================================================
+# CI del microservicio DESPACHOS
+# =========================================================
+# Build de la imagen Docker + push a ECR (tags 'latest' y '<sha7>').
+# Al terminar con exito, dispara el workflow CD correspondiente
+# (cd-despachos.yml) via 'workflow_run'.
+# =========================================================
+
+on:
+  push:
+    branches: [deploy]
+    paths:
+      - "back-Despachos_SpringBoot/**"
+      - ".github/workflows/ci-despachos.yml"
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  BUILD_CONTEXT: ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+  ECR_REPO_NAME: innovatech-despachos
+
+jobs:
+  ci:
+    name: "CI - Build & Push Despachos"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image vars
+        id: vars
+        run: |
+          ECR_REPO="${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO_NAME }}"
+          echo "image_sha=${ECR_REPO}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "image_latest=${ECR_REPO}:latest"        >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            -t "${{ steps.vars.outputs.image_sha }}" \
+            -t "${{ steps.vars.outputs.image_latest }}" \
+            "${{ env.BUILD_CONTEXT }}"
+
+      - name: Push image to ECR
+        run: |
+          docker push "${{ steps.vars.outputs.image_sha }}"
+          docker push "${{ steps.vars.outputs.image_latest }}"

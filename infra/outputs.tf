@@ -58,20 +58,31 @@ output "vpc_id" {
   value       = aws_vpc.main.id
 }
 
-# ---- Resumen util para copiar a GitHub Secrets ----
+# ---- Resumen util para copiar a GitHub ----
+# Solo 4 valores van como SECRETS (sensibles / credenciales).
+# El resto son no-sensibles -> van como repository VARIABLES
+# (Settings -> Secrets and variables -> Actions -> Variables tab).
+# Esto reduce el conteo de "secrets" de 11 a 4.
 output "github_secrets_summary" {
-  description = "Pega estos valores en Settings -> Secrets and variables -> Actions"
+  description = "Valores SENSIBLES -> pegar en la pestana 'Secrets'"
   value = {
-    AWS_REGION             = var.aws_region
-    ECR_REGISTRY           = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com"
-    ECR_REPO_VENTAS        = aws_ecr_repository.this["ventas"].repository_url
-    ECR_REPO_DESPACHOS     = aws_ecr_repository.this["despachos"].repository_url
-    ECR_REPO_FRONTEND      = aws_ecr_repository.this["frontend"].repository_url
-    EC2_FRONTEND_ID        = aws_instance.frontend.id
-    EC2_BACKEND_ID         = aws_instance.backend.id
-    EC2_DATABASE_ID        = aws_instance.database.id
-    BACKEND_PRIVATE_IP     = aws_instance.backend.private_ip
-    DATABASE_PRIVATE_IP    = aws_instance.database.private_ip
-    FRONTEND_PUBLIC_IP     = aws_instance.frontend.public_ip
+    DB_PASSWORD = "(usar el mismo valor de terraform.tfvars / db_password)"
+    # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY y AWS_SESSION_TOKEN
+    # se obtienen de AWS Academy -> AWS Details -> AWS CLI (no son output de Terraform)
+  }
+}
+
+output "github_variables_summary" {
+  description = "Valores NO sensibles -> pegar en la pestana 'Variables'"
+  value = {
+    AWS_REGION          = var.aws_region
+    ECR_REGISTRY        = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com"
+    EC2_FRONTEND_ID     = aws_instance.frontend.id
+    EC2_BACKEND_ID      = aws_instance.backend.id
+    EC2_DATABASE_ID     = aws_instance.database.id
+    DB_NAME             = var.db_name
+    BACKEND_PRIVATE_IP  = aws_instance.backend.private_ip
+    DATABASE_PRIVATE_IP = aws_instance.database.private_ip
+    FRONTEND_PUBLIC_IP  = aws_instance.frontend.public_ip
   }
 }

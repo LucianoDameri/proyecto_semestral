@@ -67,15 +67,21 @@ lenta).
 Al final del apply, Terraform imprime los valores necesarios:
 
 ```bash
-terraform output github_secrets_summary
+terraform output -json github_variables_summary   # -> GitHub Variables (no sensibles)
+terraform output github_secrets_summary           # -> recordatorio de secrets sensibles
 ```
 
-Copiar estos valores en GitHub → Settings → Secrets:
+Copiar `github_variables_summary` en GitHub → Settings → Secrets and
+variables → Actions → **Variables**:
 
-- `AWS_REGION`, `ECR_REGISTRY`
-- `ECR_REPO_VENTAS`, `ECR_REPO_DESPACHOS`, `ECR_REPO_FRONTEND`
 - `EC2_FRONTEND_ID`, `EC2_BACKEND_ID`, `EC2_DATABASE_ID`
-- `BACKEND_PRIVATE_IP`, `DATABASE_PRIVATE_IP`, `FRONTEND_PUBLIC_IP`
+- `DB_NAME`, `BACKEND_PRIVATE_IP`, `DATABASE_PRIVATE_IP`, `FRONTEND_PUBLIC_IP`
+- `AWS_REGION`, `ECR_REGISTRY` (informativos; los workflows los resuelven en runtime)
+
+Los únicos valores que van como **Secrets** son `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` (de AWS Academy) y
+`DB_PASSWORD`. Ver detalle en
+[`.github/workflows/README.md`](../.github/workflows/README.md).
 
 ## Validar que las EC2 funcionen
 
@@ -96,23 +102,4 @@ En la EC2 Database revisa que MySQL esté activo:
 
 ```bash
 sudo docker ps   # debe mostrar el contenedor 'mysql'
-sudo docker logs mysql --tail 20
-```
-
-## Destruir todo
-
-```bash
-terraform destroy
-```
-
-Esto borra toda la infraestructura, incluido el volumen MySQL. Tarda ~3-5
-minutos.
-
-## Costos en Learner Lab
-
-- 3x EC2 t3.micro: ~free tier
-- NAT Gateway: ~$0.045/h + datos transferidos
-- ECR storage: ~$0.10/GB-mes
-- Total estimado: ~$1-2 por día de uso
-
-Recuerda ejecutar `terraform destroy` al terminar para no consumir crédito.
+sudo doc
