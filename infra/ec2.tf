@@ -12,8 +12,12 @@ locals {
     #!/bin/bash
     set -eux
 
-    # ---------- Update + Docker ----------
-    dnf update -y
+    # ---------- SSM Agent primero (pre-instalado en AL2023) ----------
+    # Se inicia antes que cualquier otra cosa para que se registre en SSM
+    # mientras el resto del bootstrap sigue corriendo.
+    systemctl enable --now amazon-ssm-agent || true
+
+    # ---------- Docker ----------
     dnf install -y docker
     systemctl enable --now docker
     usermod -aG docker ec2-user
@@ -23,8 +27,8 @@ locals {
       dnf install -y awscli
     fi
 
-    # ---------- SSM Agent ----------
-    systemctl enable --now amazon-ssm-agent || true
+    # ---------- Update en segundo plano (no bloquea SSM) ----------
+    dnf update -y &
 
     echo "Bootstrap base completo: $(date)" >> /var/log/bootstrap.log
   EOT
@@ -36,12 +40,13 @@ locals {
     #!/bin/bash
     set -eux
 
-    dnf update -y
+    # ---------- SSM Agent primero ----------
+    systemctl enable --now amazon-ssm-agent || true
+
+    # ---------- Docker ----------
     dnf install -y docker
     systemctl enable --now docker
     usermod -aG docker ec2-user
-
-    systemctl enable --now amazon-ssm-agent || true
 
     # Volumen Docker para persistencia de MySQL
     docker volume create innovatech_mysql_data || true
