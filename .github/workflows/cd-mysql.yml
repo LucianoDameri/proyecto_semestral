@@ -19,7 +19,6 @@ env:
   AWS_REGION: us-east-1
   CONTAINER_NAME: innovatech-mysql
   VOLUME_NAME: innovatech_mysql_data
-  EC2_DATABASE_ID: i-0b9d20ffad0fdfabc
   DB_NAME: innovatech
 
 jobs:
@@ -38,7 +37,7 @@ jobs:
 
       - name: Deploy MySQL via SSM
         env:
-          INSTANCE_ID: ${{ env.EC2_DATABASE_ID }}
+          INSTANCE_ID: ${{ vars.EC2_DATABASE_ID }}
           DB_NAME:     ${{ env.DB_NAME }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           MYSQL_TAG:   ${{ inputs.mysql_tag }}
