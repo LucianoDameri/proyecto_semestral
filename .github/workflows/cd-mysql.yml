@@ -37,7 +37,7 @@ jobs:
 
       - name: Deploy MySQL via SSM
         env:
-          INSTANCE_ID: ${{ vars.EC2_DATABASE_ID }}
+          INSTANCE_ID: ${{ secrets.EC2_DATABASE_ID }}
           DB_NAME:     ${{ env.DB_NAME }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           MYSQL_TAG:   ${{ inputs.mysql_tag }}

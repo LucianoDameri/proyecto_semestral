@@ -55,7 +55,7 @@ jobs:
         id: db-ip
         run: |
           DB_IP=$(aws ec2 describe-instances \
-            --instance-ids "${{ vars.EC2_DATABASE_ID }}" \
+            --instance-ids "${{ secrets.EC2_DATABASE_ID }}" \
             --query 'Reservations[0].Instances[0].PrivateIpAddress' \
             --output text)
           echo "DB_IP=$DB_IP" >> "$GITHUB_OUTPUT"
@@ -98,7 +98,7 @@ jobs:
           PARAMS=$(jq -n --arg cmd "$CMD" '{commands: [$cmd]}')
 
           CMD_ID=$(aws ssm send-command \
-            --instance-ids "${{ vars.EC2_BACKEND_ID }}" \
+            --instance-ids "${{ secrets.EC2_BACKEND_ID }}" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy ${{ env.SERVICE_NAME }} ${GITHUB_SHA::7}" \
             --parameters "$PARAMS" \
@@ -109,10 +109,10 @@ jobs:
 
           aws ssm wait command-executed \
             --command-id "$CMD_ID" \
-            --instance-id "${{ vars.EC2_BACKEND_ID }}" || true
+            --instance-id "${{ secrets.EC2_BACKEND_ID }}" || true
 
           aws ssm get-command-invocation \
             --command-id "$CMD_ID" \
-            --instance-id "${{ vars.EC2_BACKEND_ID }}" \
+            --instance-id "${{ secrets.EC2_BACKEND_ID }}" \
             --query '{Status:Status, StdOut:StandardOutputContent, StdErr:StandardErrorContent}' \
             --output json
