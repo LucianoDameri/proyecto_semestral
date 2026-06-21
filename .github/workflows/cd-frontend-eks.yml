@@ -1,0 +1,77 @@
+name: Frontend - CD EKS
+
+# =========================================================
+# CD del FRONTEND hacia el cluster EKS (infra/eks).
+# Alternativa a cd-frontend.yml (que despliega a ECS) - usa la MISMA
+# imagen que publica ci-frontend.yml en ECR. Se dispara automaticamente
+# cuando termina con exito "Frontend - CI (Build & Push)" - igual que el
+# CD de ECS, asi que cada push a 'deploy' despliega a AMBOS clusters.
+#
+# Requiere haber corrido antes "EKS - Bootstrap Cluster" al menos una vez
+# (los Deployments de backend-ventas/backend-despachos tambien deben
+# existir ya, porque el frontend depende de esos Services por DNS interno).
+# =========================================================
+
+on:
+  workflow_run:
+    workflows: ["Frontend - CI (Build & Push)"]
+    types: [completed]
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: innovatech-eks
+  ECR_REPO_NAME: innovatech-frontend
+  DEPLOYMENT_NAME: frontend
+
+jobs:
+  cd:
+    name: "CD - Deploy Frontend (EKS)"
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Instalar kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Conectar kubectl al cluster EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.CLUSTER_NAME }}
+
+      - name: Aplicar manifiesto con la imagen real de ECR
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          IMAGE="${ECR_REGISTRY}/${{ env.ECR_REPO_NAME }}:latest"
+          sed -i "s|image: ${{ env.ECR_REPO_NAME }}:latest|image: ${IMAGE}|g" infra/k8s/frontend.yml
+          kubectl apply -f infra/k8s/frontend.yml
+
+      - name: Forzar rollout (re-pull de :latest)
+        run: |
+          kubectl rollout restart deployment/${{ env.DEPLOYMENT_NAME }}
+          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} --timeout=180s
+
+      - name: Verificar y mostrar URL publica
+        run: |
+          kubectl get pods -l app=${{ env.DEPLOYMENT_NAME }} -o wide
+          echo ""
+          echo "====== URL PUBLICA (puede tardar 1-2 min en aparecer) ======"
+          kubectl get service frontend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+          echo ""

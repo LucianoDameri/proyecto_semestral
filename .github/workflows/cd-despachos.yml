@@ -1,15 +1,15 @@
 name: Despachos - CD (Deploy)
 
 # =========================================================
-# CD del microservicio DESPACHOS
+# CD del microservicio DESPACHOS → ECS Fargate
 # =========================================================
 # Se dispara automaticamente cuando termina con exito el workflow
 # "Despachos - CI (Build & Push)" (ci-despachos.yml) en la rama
 # 'deploy', o manualmente via workflow_dispatch.
 #
-# Recalcula la URL de la imagen ':latest' en ECR (no depende de
-# outputs del otro workflow) y la despliega en la EC2 backend via
-# AWS SSM send-command.
+# Estrategia: force-new-deployment sobre el servicio ECS.
+# ECS descarga automaticamente la imagen ':latest' del ECR y
+# reemplaza las tareas en ejecucion (rolling update).
 # =========================================================
 
 on:
@@ -20,15 +20,13 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  SERVICE_NAME: despachos
-  CONTAINER_PORT: 8081
-  HOST_PORT: 8081
   ECR_REPO_NAME: innovatech-despachos
-  DB_NAME: innovatech
+  ECS_CLUSTER: innovatech-cluster
+  ECS_SERVICE: innovatech-despachos
 
 jobs:
   cd:
-    name: "CD - Deploy Despachos"
+    name: "CD - Deploy Despachos (ECS)"
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
@@ -41,77 +39,27 @@ jobs:
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set image vars
-        id: vars
+      - name: Force new ECS deployment
         run: |
-          ECR_REPO="${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO_NAME }}"
-          echo "image_latest=${ECR_REPO}:latest" >> "$GITHUB_OUTPUT"
+          aws ecs update-service \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --service "${{ env.ECS_SERVICE }}" \
+            --force-new-deployment \
+            --query 'service.{status:status,desired:desiredCount,running:runningCount}' \
+            --output json
 
-      - name: Resolve database private IP
-        id: db-ip
+      - name: Wait for ECS service to stabilize
         run: |
-          DB_IP=$(aws ec2 describe-instances \
-            --instance-ids "${{ secrets.EC2_DATABASE_ID }}" \
-            --query 'Reservations[0].Instances[0].PrivateIpAddress' \
-            --output text)
-          echo "DB_IP=$DB_IP" >> "$GITHUB_OUTPUT"
+          echo "Esperando que el servicio ECS estabilice..."
+          aws ecs wait services-stable \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}"
+          echo "Servicio estable."
 
-      - name: Deploy on EC2 (SSM)
-        env:
-          IMAGE_LATEST: ${{ steps.vars.outputs.image_latest }}
-          DB_IP:        ${{ steps.db-ip.outputs.DB_IP }}
-          DB_PASSWORD:  ${{ secrets.DB_PASSWORD }}
-          DB_NAME:      ${{ env.DB_NAME }}
-          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+      - name: Verify deployment
         run: |
-          set -e
-
-          CMD=$(cat <<EOF
-          set -eux
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
-            | sudo docker login --username AWS --password-stdin ${ECR_REGISTRY}
-          sudo docker pull ${IMAGE_LATEST}
-          sudo docker stop ${{ env.SERVICE_NAME }} || true
-          sudo docker rm ${{ env.SERVICE_NAME }} || true
-          sudo docker run -d \
-            --name ${{ env.SERVICE_NAME }} \
-            --restart unless-stopped \
-            -p ${{ env.HOST_PORT }}:${{ env.CONTAINER_PORT }} \
-            -e DB_ENDPOINT=${DB_IP} \
-            -e DB_PORT=3306 \
-            -e DB_NAME=${DB_NAME} \
-            -e DB_USERNAME=root \
-            -e DB_PASSWORD='${DB_PASSWORD}' \
-            -e SERVER_PORT=${{ env.CONTAINER_PORT }} \
-            ${IMAGE_LATEST}
-          sudo docker image prune -f
-          EOF
-          )
-
-          # Construir el JSON de parametros con jq: el shorthand
-          # "commands=$CMD" de la AWS CLI falla con strings multilinea.
-          PARAMS=$(jq -n --arg cmd "$CMD" '{commands: [$cmd]}')
-
-          CMD_ID=$(aws ssm send-command \
-            --instance-ids "${{ secrets.EC2_BACKEND_ID }}" \
-            --document-name "AWS-RunShellScript" \
-            --comment "Deploy ${{ env.SERVICE_NAME }} ${GITHUB_SHA::7}" \
-            --parameters "$PARAMS" \
-            --query 'Command.CommandId' \
-            --output text)
-
-          echo "SSM CommandId: $CMD_ID"
-
-          aws ssm wait command-executed \
-            --command-id "$CMD_ID" \
-            --instance-id "${{ secrets.EC2_BACKEND_ID }}" || true
-
-          aws ssm get-command-invocation \
-            --command-id "$CMD_ID" \
-            --instance-id "${{ secrets.EC2_BACKEND_ID }}" \
-            --query '{Status:Status, StdOut:StandardOutputContent, StdErr:StandardErrorContent}' \
+          aws ecs describe-services \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}" \
+            --query 'services[0].{status:status,desired:desiredCount,running:runningCount,pending:pendingCount}' \
             --output json

@@ -58,6 +58,26 @@ output "vpc_id" {
   value       = aws_vpc.main.id
 }
 
+# ---- ECS Fargate (EP3) ----
+output "alb_dns_name" {
+  description = "DNS publico del Application Load Balancer (punto de entrada)"
+  value       = aws_lb.public.dns_name
+}
+
+output "ecs_cluster_name" {
+  description = "Nombre del cluster ECS"
+  value       = aws_ecs_cluster.this.name
+}
+
+output "ecs_services" {
+  description = "Nombres de los servicios ECS"
+  value = {
+    ventas    = aws_ecs_service.ventas.name
+    despachos = aws_ecs_service.despachos.name
+    frontend  = aws_ecs_service.frontend.name
+  }
+}
+
 # ---- Resumen util para copiar a GitHub ----
 # Solo 4 valores van como SECRETS (sensibles / credenciales).
 # El resto son no-sensibles -> van como repository VARIABLES

@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-ventas
+  labels:
+    app: backend-ventas
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend-ventas
+  template:
+    metadata:
+      labels:
+        app: backend-ventas
+        tier: backend
+    spec:
+      imagePullSecrets:
+        - name: ecr-secret
+      containers:
+        - name: backend-ventas
+          image: innovatech-ventas:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DB_ENDPOINT
+              value: "mysql"
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_DATABASE
+            - name: DB_USERNAME
+              value: "root"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: SERVER_PORT
+              value: "8080"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 10
+            failureThreshold: 8
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "768Mi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-ventas
+  labels:
+    app: backend-ventas
+    tier: backend
+spec:
+  selector:
+    app: backend-ventas
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP

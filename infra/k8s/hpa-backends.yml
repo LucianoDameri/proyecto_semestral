@@ -1,0 +1,43 @@
+# HPA al 50% CPU - mismo umbral usado en el autoscaling de ECS
+# (infra/ecs.tf), para mantener consistencia de criterio entre ambas
+# arquitecturas y poder justificar el valor igual en la presentacion.
+# Requiere metrics-server instalado (lo hace cd-eks-bootstrap.yml).
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hpa-backend-ventas
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend-ventas
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hpa-backend-despachos
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend-despachos
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50

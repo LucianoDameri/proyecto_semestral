@@ -1,0 +1,72 @@
+name: Despachos - CD EKS
+
+# =========================================================
+# CD del microservicio DESPACHOS hacia el cluster EKS (infra/eks).
+# Alternativa a cd-despachos.yml (que despliega a ECS) - usa la MISMA
+# imagen que publica ci-despachos.yml en ECR. Se dispara automaticamente
+# cuando termina con exito "Despachos - CI (Build & Push)" - igual que el
+# CD de ECS, asi que cada push a 'deploy' despliega a AMBOS clusters.
+#
+# Requiere haber corrido antes "EKS - Bootstrap Cluster" al menos una vez.
+# =========================================================
+
+on:
+  workflow_run:
+    workflows: ["Despachos - CI (Build & Push)"]
+    types: [completed]
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: innovatech-eks
+  ECR_REPO_NAME: innovatech-despachos
+  DEPLOYMENT_NAME: backend-despachos
+
+jobs:
+  cd:
+    name: "CD - Deploy Despachos (EKS)"
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Instalar kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Conectar kubectl al cluster EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.CLUSTER_NAME }}
+
+      - name: Aplicar manifiesto con la imagen real de ECR
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          IMAGE="${ECR_REGISTRY}/${{ env.ECR_REPO_NAME }}:latest"
+          sed -i "s|image: ${{ env.ECR_REPO_NAME }}:latest|image: ${IMAGE}|g" infra/k8s/backend-despachos.yml
+          kubectl apply -f infra/k8s/backend-despachos.yml
+
+      - name: Forzar rollout (re-pull de :latest)
+        run: |
+          kubectl rollout restart deployment/${{ env.DEPLOYMENT_NAME }}
+          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} --timeout=300s
+
+      - name: Verificar
+        run: |
+          kubectl get pods -l app=${{ env.DEPLOYMENT_NAME }} -o wide
+          kubectl logs deployment/${{ env.DEPLOYMENT_NAME }} --tail=50 || true

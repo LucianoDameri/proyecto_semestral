@@ -1,0 +1,89 @@
+name: EKS - Bootstrap Cluster (manual)
+
+# =========================================================
+# Bootstrap del cluster EKS (infra/eks). Se corre UNA VEZ despues del
+# terraform apply de infra/eks, y de nuevo cada vez que:
+#   - se vencio el token de ECR (~12h) y hay que refrescar ecr-secret
+#   - se reinicio el cluster y no hay metrics-server / mysql / HPA
+#
+# No se dispara automaticamente con push: a diferencia de los cd-*.yml
+# de ECS, este y los demas *-eks.yml son siempre manuales, para no pelear
+# con los despliegues automaticos hacia ECS en cada push a 'deploy'.
+# =========================================================
+
+on:
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: innovatech-eks
+  DB_NAME: innovatech
+
+jobs:
+  bootstrap:
+    name: "Bootstrap cluster EKS"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Instalar kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Conectar kubectl al cluster EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.CLUSTER_NAME }}
+          kubectl get nodes -o wide
+
+      - name: Instalar metrics-server (requerido por el HPA)
+        run: |
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+          kubectl rollout status deployment/metrics-server -n kube-system --timeout=90s || true
+
+      - name: Crear/refrescar Secret de MySQL
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          kubectl create secret generic mysql-secret \
+            --from-literal=MYSQL_ROOT_PASSWORD="${DB_PASSWORD}" \
+            --from-literal=MYSQL_DATABASE="${{ env.DB_NAME }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Crear/refrescar imagePullSecret para ECR
+        run: |
+          ECR_TOKEN=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          kubectl create secret docker-registry ecr-secret \
+            --docker-server=${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com \
+            --docker-username=AWS \
+            --docker-password=${ECR_TOKEN} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Aplicar MySQL
+        run: |
+          kubectl apply -f infra/k8s/mysql.yml
+          kubectl rollout status deployment/mysql --timeout=300s || true
+
+      - name: Aplicar HPA de los backends
+        run: |
+          kubectl apply -f infra/k8s/hpa-backends.yml
+
+      - name: Estado del cluster
+        run: |
+          echo "====== PODS ======"
+          kubectl get pods -o wide
+          echo ""
+          echo "====== SECRETS ======"
+          kubectl get secrets
+          echo ""
+          echo "====== HPA ======"
+          kubectl get hpa

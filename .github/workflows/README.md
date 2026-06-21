@@ -1,4 +1,4 @@
-# GitHub Actions - CI/CD Innovatech EP2/EP3
+# GitHub Actions - CI/CD Innovatech EP3 (ECS Fargate)
 
 Este directorio contiene la documentación de los workflows que
 construyen, publican y despliegan cada componente del proyecto.
@@ -7,19 +7,33 @@ Cada componente (Ventas, Despachos, Frontend) tiene **dos archivos de
 workflow separados**: uno de CI y otro de CD. El nombre del archivo deja
 explícito a qué etapa corresponde cada uno.
 
-| Archivo                | Nombre en Actions                    | Etapa | Carpeta vigilada / Trigger             | Imagen ECR             | EC2 destino |
+| Archivo                | Nombre en Actions                    | Etapa | Carpeta vigilada / Trigger             | Imagen ECR             | Destino ECS |
 |------------------------|----------------------------------------|-------|-------------------------------------------|--------------------------|-------------|
 | `ci-ventas.yml`        | "Ventas - CI (Build & Push)"          | CI    | `back-Ventas_SpringBoot/**`              | `innovatech-ventas`      | -           |
-| `cd-ventas.yml`        | "Ventas - CD (Deploy)"                | CD    | `workflow_run` de CI Ventas (o manual)   | `innovatech-ventas`      | Backend     |
+| `cd-ventas.yml`        | "Ventas - CD (Deploy)"                | CD    | `workflow_run` de CI Ventas (o manual)   | `innovatech-ventas`      | Service ECS `innovatech-ventas` |
 | `ci-despachos.yml`     | "Despachos - CI (Build & Push)"       | CI    | `back-Despachos_SpringBoot/**`           | `innovatech-despachos`   | -           |
-| `cd-despachos.yml`     | "Despachos - CD (Deploy)"             | CD    | `workflow_run` de CI Despachos (o manual)| `innovatech-despachos`   | Backend     |
-| `ci-frontend.yml`      | "Frontend - CI (Build & Push)"        | CI    | `front_despacho/**`                      | `innovatech-frontend`    | -           |
-| `cd-frontend.yml`      | "Frontend - CD (Deploy)"              | CD    | `workflow_run` de CI Frontend (o manual) | `innovatech-frontend`    | Frontend    |
-| `cd-mysql.yml`         | "MySQL - CD (Bootstrap/Deploy)"       | CD    | manual (`workflow_dispatch`)             | `mysql:<tag>` (Docker Hub)| Database    |
+| `cd-despachos.yml`     | "Despachos - CD (Deploy)"             | CD    | `workflow_run` de CI Despachos (o manual)| `innovatech-despachos`   | Service ECS `innovatech-despachos` |
+| `ci-frontend.yml`      | "Frontend - CI (Build & Push)"        | CI    | `front_despacho/**`                      | `innovatech-frontend`    | Service ECS `innovatech-frontend` |
+| `cd-frontend.yml`      | "Frontend - CD (Deploy)"              | CD    | `workflow_run` de CI Frontend (o manual) | `innovatech-frontend`    | Service ECS `innovatech-frontend` |
+| `cd-mysql.yml`         | "MySQL - CD (Bootstrap/Deploy)"       | CD    | manual (`workflow_dispatch`)             | -                        | EC2 Database (verificación de estado) |
 
-> Los antiguos `cicd-<servicio>.yml` (un solo archivo con jobs `ci` + `cd`)
-> fueron reemplazados por este esquema de archivos separados. Bórralos de tu
-> checkout local con `git rm .github/workflows/cicd-*.yml`.
+> Los antiguos `cicd-<servicio>.yml` (un solo archivo con jobs `ci` + `cd`) y
+> el flujo basado en SSM (EP2) fueron reemplazados por este esquema:
+> archivos CI/CD separados + despliegue directo en ECS Fargate.
+
+## Arquitectura (EP3)
+
+- **Cluster ECS Fargate** (`innovatech-cluster`) con 3 servicios: ventas,
+  despachos, frontend. Sin servidores que administrar (serverless).
+- **Application Load Balancer** público en el puerto 80, con reglas de
+  enrutamiento por path: `/api/v1/ventas*` → service Ventas,
+  `/api/v1/despachos*` → service Despachos, el resto → service Frontend.
+- **MySQL** sigue corriendo en la EC2 `database` (EP2), en subred privada.
+  Las tareas ECS se conectan a su IP privada por el puerto 3306.
+- **Autoscaling** por CPU (Target Tracking, 50%) en los 3 servicios,
+  `min_capacity=1` / `max_capacity=3`.
+- **LabRole** de AWS Academy se reutiliza como execution role y task role
+  de cada Task Definition (no se crean roles IAM nuevos).
 
 ## Cómo funciona la cadena CI -> CD
 
@@ -29,13 +43,22 @@ explícito a qué etapa corresponde cada uno.
    otro recurso de AWS.
 2. **CD** (`cd-<servicio>.yml`): se dispara automáticamente cuando el workflow
    de CI correspondiente termina con éxito (`on.workflow_run`), o manualmente
-   vía `workflow_dispatch`. Recalcula la URL de la imagen `:latest` en ECR
-   (no depende de outputs de otro workflow), resuelve las IPs privadas
-   necesarias y despliega el contenedor en la EC2 correspondiente vía
-   `aws ssm send-command`.
+   vía `workflow_dispatch`. Ejecuta `aws ecs update-service --force-new-deployment`
+   sobre el servicio ECS correspondiente (la Task Definition usa el tag
+   `:latest`, así que ECS vuelve a hacer `docker pull` de la imagen recién
+   publicada) y espera con `aws ecs wait services-stable` a que las tareas
+   nuevas queden `RUNNING` y saludables en el target group del ALB.
 
-No se usa SSH ni claves `.pem`. La autenticación es 100% IAM gracias al
-`LabInstanceProfile` adjunto a las EC2 (configurado por Terraform).
+No se usa SSH, claves `.pem` ni AWS SSM Session Manager para el despliegue de
+los 3 servicios. La autenticación es 100% IAM vía
+`AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN` (credenciales temporales de AWS
+Academy), que tienen permisos suficientes sobre ECS/ELB en el Learner Lab.
+
+**Importante - orden de despliegue inicial:** los servicios ECS deben existir
+(`terraform apply` de `infra/ecs.tf`) y tener al menos una imagen `:latest` en
+ECR (CI ejecutado al menos una vez) **antes** de que el primer `cd-*.yml`
+pueda tener éxito. Si el servicio ECS aún no existe, `aws ecs update-service`
+falla con `ServiceNotFoundException` - es esperado en el primer push.
 
 ## Configuración de GitHub: Secrets vs Variables
 
@@ -51,4 +74,62 @@ tampoco son información comprometedora).
 | `AWS_ACCESS_KEY_ID`     | AWS Academy → AWS Details → AWS CLI (Learner Lab)    |
 | `AWS_SECRET_ACCESS_KEY` | AWS Academy → AWS Details → AWS CLI                  |
 | `AWS_SESSION_TOKEN`     | AWS Academy → AWS Details → AWS CLI                  |
-| `DB_PASSWORD`           | mismo password u
+| `DB_PASSWORD`           | mismo password usado en `terraform.tfvars` (`db_password`) |
+
+> Las credenciales de AWS Academy expiran cada ~4h. Hay que actualizarlas en
+> GitHub Secrets cada vez que se reinicia el Learner Lab.
+
+### Variables (Settings → Secrets and variables → Actions → **Variables**)
+
+No sensibles - sirven de referencia / documentación, los workflows de ECS
+usan valores fijos en su bloque `env:` (`ECS_CLUSTER`, `ECS_SERVICE`,
+`ECR_REPO_NAME`) porque son nombres fijos definidos en Terraform y no cambian
+entre cada `terraform apply` (a diferencia de los IDs de instancia EC2 de la
+fase EP2, que sí cambiaban en cada `destroy/apply`).
+
+Aun se mantiene `EC2_DATABASE_ID` como secret/variable para `cd-mysql.yml`,
+que solo consulta el estado de la instancia de base de datos.
+
+## Si algo falla en el primer despliegue
+
+1. Verifica que `terraform apply` de `infra/ecs.tf` haya terminado sin error
+   y que el cluster/servicios existan en la consola ECS.
+2. Verifica que el CI del servicio haya corrido al menos una vez (imagen
+   `:latest` presente en el repo ECR correspondiente).
+3. Si el servicio existe pero las tareas no llegan a `RUNNING`/healthy,
+   revisa CloudWatch Logs (`/ecs/innovatech-<servicio>`) - ahí queda el
+   stdout/stderr de cada contenedor (errores de conexión a la DB, excepciones
+   de arranque de Spring Boot, etc.).
+4. Re-ejecuta el CD manualmente (`workflow_dispatch`) una vez resuelta la causa.
+
+## Arquitectura alternativa: EKS (`*-eks.yml`)
+
+El profesor pidió específicamente EKS para este proyecto. La rúbrica acepta
+ECS o EKS indistintamente, así que en vez de reemplazar todo lo de arriba,
+se agregó un módulo Terraform separado (`infra/eks/`) y workflows aparte:
+
+| Archivo                    | Nombre en Actions                    | Trigger              | Destino |
+|-----------------------------|----------------------------------------|------------------------|---------|
+| `cd-eks-bootstrap.yml`     | "EKS - Bootstrap Cluster (manual)"    | manual (`workflow_dispatch`) | metrics-server, secrets, MySQL, HPA |
+| `cd-ventas-eks.yml`        | "Ventas - CD EKS"                     | automatico (`workflow_run` tras CI Ventas) o manual | Deployment `backend-ventas` en EKS |
+| `cd-despachos-eks.yml`     | "Despachos - CD EKS"                  | automatico (`workflow_run` tras CI Despachos) o manual | Deployment `backend-despachos` en EKS |
+| `cd-frontend-eks.yml`      | "Frontend - CD EKS"                   | automatico (`workflow_run` tras CI Frontend) o manual | Deployment `frontend` en EKS |
+
+Los 3 CD por servicio se disparan automáticamente igual que los de ECS - cada
+push a `deploy` despliega a **ambos** clusters (ECS y EKS) en paralelo, sin
+pelearse entre sí porque son recursos completamente independientes.
+
+El **bootstrap** se dejó manual a propósito: instala metrics-server y crea
+secrets a nivel de cluster, no de un servicio en particular - no tiene
+sentido repetirlo en cada push de código. Hay que correrlo a mano:
+- la primera vez, después del `terraform apply` de `infra/eks`
+- cada vez que el token de ECR expira (~12h) y `ecr-secret` necesita refresco
+- si el cluster se recreó y faltan metrics-server/mysql/HPA
+
+Si destruyes la infra de EKS (`terraform destroy` en `infra/eks`) pero dejas
+estos workflows activos, los próximos pushes van a mostrar el CD de EKS en
+rojo (cluster no existe) - es esperado, no afecta al CD de ECS.
+
+Usan las MISMAS imágenes ECR que ya publican `ci-ventas.yml`/`ci-despachos.yml`/
+`ci-frontend.yml` - no se tocó ningún workflow de CI. El orden de ejecución y
+el detalle completo de la arquitectura están en `docs/EP3_PLAN_EKS.md`.

@@ -1,0 +1,77 @@
+# MySQL - base de datos compartida para Ventas y Despachos, EXCLUSIVA del
+# cluster EKS (la arquitectura ECS sigue usando su propia EC2 con MySQL,
+# ver infra/ec2.tf - este Deployment es independiente de esa instancia).
+# Sin PersistentVolumeClaim a proposito, para mantener compatibilidad con
+# AWS Academy (no hay EBS CSI driver instalado). Si se borra este pod los
+# datos se pierden - para la demo de self-healing, usa un pod de backend,
+# no este.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+    tier: data
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+        tier: data
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_DATABASE
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD"
+            initialDelaySeconds: 40
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+    tier: data
+spec:
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+  type: ClusterIP
