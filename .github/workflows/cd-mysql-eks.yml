@@ -1,17 +1,20 @@
-name: EKS - Bootstrap Cluster (manual)
+name: MySQL - CD EKS
 
 # =========================================================
-# Bootstrap del cluster EKS (infra/eks). Se corre UNA VEZ despues del
-# terraform apply de infra/eks, y de nuevo cada vez que:
-#   - se vencio el token de ECR (~12h) y hay que refrescar ecr-secret
-#   - se reinicio el cluster y no hay metrics-server / mysql / HPA
+# Pipeline de la BASE DE DATOS para el cluster EKS (infra/eks).
+# No tiene CI propio porque usa la imagen publica mysql:8.0 (no se
+# compila nada). Tambien hace de "bootstrap" del cluster: instala
+# metrics-server (requerido por el HPA) y crea/refresca los secrets
+# que usan los demas pipelines (mysql-secret, ecr-secret).
 #
-# No se dispara automaticamente con push: a diferencia de los cd-*.yml
-# de ECS, este y los demas *-eks.yml son siempre manuales, para no pelear
-# con los despliegues automaticos hacia ECS en cada push a 'deploy'.
+# Se dispara con cualquier push a 'deploy', o manualmente. Es automatico:
+# no requiere ningun paso a mano salvo el terraform apply inicial del
+# cluster (infra/eks).
 # =========================================================
 
 on:
+  push:
+    branches: [deploy]
   workflow_dispatch: {}
 
 env:
@@ -20,11 +23,14 @@ env:
   DB_NAME: innovatech
 
 jobs:
-  bootstrap:
-    name: "Bootstrap cluster EKS"
+  cd:
+    name: "CD - Deploy MySQL + Bootstrap (EKS)"
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Configurar credenciales AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -43,7 +49,7 @@ jobs:
             --name ${{ env.CLUSTER_NAME }}
           kubectl get nodes -o wide
 
-      - name: Instalar metrics-server (requerido por el HPA)
+      - name: Instalar metrics-server (idempotente, requerido por el HPA)
         run: |
           kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
           kubectl rollout status deployment/metrics-server -n kube-system --timeout=90s || true
@@ -68,22 +74,18 @@ jobs:
             --docker-password=${ECR_TOKEN} \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Aplicar MySQL
+      - name: Aplicar MySQL y HPA
         run: |
           kubectl apply -f infra/k8s/mysql.yml
-          kubectl rollout status deployment/mysql --timeout=300s || true
-
-      - name: Aplicar HPA de los backends
-        run: |
           kubectl apply -f infra/k8s/hpa-backends.yml
 
-      - name: Estado del cluster
+      - name: Forzar rollout y esperar
         run: |
-          echo "====== PODS ======"
-          kubectl get pods -o wide
-          echo ""
-          echo "====== SECRETS ======"
+          kubectl rollout restart deployment/mysql
+          kubectl rollout status deployment/mysql --timeout=300s
+
+      - name: Verificar
+        run: |
+          kubectl get pods -l app=mysql -o wide
           kubectl get secrets
-          echo ""
-          echo "====== HPA ======"
           kubectl get hpa

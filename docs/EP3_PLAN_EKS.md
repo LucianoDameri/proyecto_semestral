@@ -61,24 +61,26 @@ EKS Cluster (control plane administrado por AWS)
   Classic ELB usando el proveedor de nube integrado - basta con que las
   subredes públicas tengan el tag `kubernetes.io/role/elb=1` (ya están así
   en `infra/eks/main.tf`). Evita instalar Helm/el Load Balancer Controller.
-- **Pipelines siempre manuales**: a diferencia de los `cd-*.yml` de ECS
-  (que se disparan solos con `workflow_run` tras el CI), los `*-eks.yml`
-  son `workflow_dispatch` únicamente, para no competir con los despliegues
-  automáticos hacia ECS en cada push a `deploy`.
+- **Un pipeline separado por componente, todos automáticos**: igual que
+  ECS, cada componente tiene su propio workflow (`cd-mysql-eks.yml`,
+  `cd-ventas-eks.yml`, `cd-despachos-eks.yml`, `cd-frontend-eks.yml`),
+  visibles por separado en la pestaña Actions. Los 3 de servicio reusan el
+  CI que ya existe para ECS; el de MySQL no tiene CI propio (imagen
+  pública) y hace de bootstrap del cluster (metrics-server + secrets).
 
 ## 3. Orden de ejecución
 
+El único paso manual de todo el proceso es el primero, y se hace **una sola
+vez** en la vida del proyecto:
+
 1. `cd infra/eks && terraform init && terraform apply` (10-15 min: VPC,
-   NAT, cluster EKS, node group).
-2. `aws eks update-kubeconfig --region us-east-1 --name innovatech-eks`
-3. Actions → **"EKS - Bootstrap Cluster (manual)"** → Run workflow.
-   (instala metrics-server, crea `mysql-secret` y `ecr-secret`, aplica
-   `mysql.yml` y `hpa-backends.yml`)
-4. Actions → **"Ventas - CD EKS (manual)"**, **"Despachos - CD EKS (manual)"**,
-   **"Frontend - CD EKS (manual)"** → Run workflow en cada uno (en ese orden,
-   porque el frontend depende de que los Services de backend ya existan).
-5. `kubectl get service frontend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'`
-   para la URL pública.
+   NAT, cluster EKS, node group). Si el Lab de Academy se reinicia, el
+   cluster se borra y hay que repetir este paso.
+2. Push a `deploy` (cualquier commit). Dispara los 4 pipelines de EKS en
+   cadena: `cd-mysql-eks.yml` por el push directo, y los 3 de servicio en
+   cuanto su CI respectivo termine. No hace falta tocar nada a mano.
+3. Revisar cada workflow en Actions, o el log de `cd-frontend-eks.yml`
+   (el último en la cadena) para ver `kubectl get pods` y la URL pública.
 
 ## 4. Evidencia para la rúbrica / presentación
 

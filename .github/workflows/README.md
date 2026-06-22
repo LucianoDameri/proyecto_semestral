@@ -102,34 +102,33 @@ que solo consulta el estado de la instancia de base de datos.
    de arranque de Spring Boot, etc.).
 4. Re-ejecuta el CD manualmente (`workflow_dispatch`) una vez resuelta la causa.
 
-## Arquitectura alternativa: EKS (`*-eks.yml`)
+## Arquitectura usada para la entrega: EKS (`*-eks.yml`)
 
-El profesor pidió específicamente EKS para este proyecto. La rúbrica acepta
-ECS o EKS indistintamente, así que en vez de reemplazar todo lo de arriba,
-se agregó un módulo Terraform separado (`infra/eks/`) y workflows aparte:
+El profesor pidió específicamente EKS para este proyecto (la rúbrica acepta
+ECS o EKS indistintamente, pero la entrega final es EKS). El código de ECS
+(arriba) se deja intacto en el repo como referencia, pero no se despliega.
 
-| Archivo                    | Nombre en Actions                    | Trigger              | Destino |
-|-----------------------------|----------------------------------------|------------------------|---------|
-| `cd-eks-bootstrap.yml`     | "EKS - Bootstrap Cluster (manual)"    | manual (`workflow_dispatch`) | metrics-server, secrets, MySQL, HPA |
-| `cd-ventas-eks.yml`        | "Ventas - CD EKS"                     | automatico (`workflow_run` tras CI Ventas) o manual | Deployment `backend-ventas` en EKS |
-| `cd-despachos-eks.yml`     | "Despachos - CD EKS"                  | automatico (`workflow_run` tras CI Despachos) o manual | Deployment `backend-despachos` en EKS |
-| `cd-frontend-eks.yml`      | "Frontend - CD EKS"                   | automatico (`workflow_run` tras CI Frontend) o manual | Deployment `frontend` en EKS |
+Igual que ECS, EKS tiene **un pipeline separado por componente** - se ve
+así en la pestaña Actions:
 
-Los 3 CD por servicio se disparan automáticamente igual que los de ECS - cada
-push a `deploy` despliega a **ambos** clusters (ECS y EKS) en paralelo, sin
-pelearse entre sí porque son recursos completamente independientes.
+| Archivo                  | Nombre en Actions    | Trigger                                    | Despliega |
+|---------------------------|------------------------|-----------------------------------------------|-----------|
+| `cd-mysql-eks.yml`       | "MySQL - CD EKS"      | push a `deploy`, o manual                     | metrics-server, secrets, MySQL, HPA |
+| `cd-ventas-eks.yml`      | "Ventas - CD EKS"     | automático tras `ci-ventas.yml`, o manual     | Deployment `backend-ventas` |
+| `cd-despachos-eks.yml`   | "Despachos - CD EKS"  | automático tras `ci-despachos.yml`, o manual  | Deployment `backend-despachos` |
+| `cd-frontend-eks.yml`    | "Frontend - CD EKS"   | automático tras `ci-frontend.yml`, o manual   | Deployment `frontend` |
 
-El **bootstrap** se dejó manual a propósito: instala metrics-server y crea
-secrets a nivel de cluster, no de un servicio en particular - no tiene
-sentido repetirlo en cada push de código. Hay que correrlo a mano:
-- la primera vez, después del `terraform apply` de `infra/eks`
-- cada vez que el token de ECR expira (~12h) y `ecr-secret` necesita refresco
-- si el cluster se recreó y faltan metrics-server/mysql/HPA
+Los 3 CD por servicio reutilizan las MISMAS imágenes que publican
+`ci-ventas.yml`/`ci-despachos.yml`/`ci-frontend.yml` para ECS - no se tocó
+ningún workflow de CI. `cd-mysql-eks.yml` no tiene CI propio (usa la imagen
+pública `mysql:8.0`) y además hace de "bootstrap" del cluster: instala
+`metrics-server` y crea/refresca `mysql-secret` y `ecr-secret`. Cada uno de
+los otros 3 también refresca su propio `ecr-secret` al iniciar (el token
+vence cada ~12h), así no dependen de que el de MySQL haya corrido recién.
 
-Si destruyes la infra de EKS (`terraform destroy` en `infra/eks`) pero dejas
-estos workflows activos, los próximos pushes van a mostrar el CD de EKS en
-rojo (cluster no existe) - es esperado, no afecta al CD de ECS.
+Todo es automático - **el único paso manual en la vida del proyecto** es el
+`terraform apply` inicial de `infra/eks` (crea el cluster; no se puede
+automatizar desde Actions con credenciales temporales de Academy). Una vez
+que el cluster existe, cada push a `deploy` redespliega solo.
 
-Usan las MISMAS imágenes ECR que ya publican `ci-ventas.yml`/`ci-despachos.yml`/
-`ci-frontend.yml` - no se tocó ningún workflow de CI. El orden de ejecución y
-el detalle completo de la arquitectura están en `docs/EP3_PLAN_EKS.md`.
+El detalle completo de la arquitectura está en `docs/EP3_PLAN_EKS.md`.

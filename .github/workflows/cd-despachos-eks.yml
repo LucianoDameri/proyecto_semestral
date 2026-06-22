@@ -7,7 +7,10 @@ name: Despachos - CD EKS
 # cuando termina con exito "Despachos - CI (Build & Push)" - igual que el
 # CD de ECS, asi que cada push a 'deploy' despliega a AMBOS clusters.
 #
-# Requiere haber corrido antes "EKS - Bootstrap Cluster" al menos una vez.
+# Refresca su propio ecr-secret (el token vence cada ~12h), asi no depende
+# de que "MySQL - CD EKS" haya corrido recientemente. Si es la primerísima
+# vez, igual requiere que ese pipeline haya corrido al menos una vez antes
+# (instala metrics-server y crea mysql-secret).
 # =========================================================
 
 on:
@@ -52,6 +55,17 @@ jobs:
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
             --name ${{ env.CLUSTER_NAME }}
+
+      - name: Refrescar imagePullSecret para ECR
+        run: |
+          ECR_TOKEN=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          kubectl create secret docker-registry ecr-secret \
+            --docker-server=${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com \
+            --docker-username=AWS \
+            --docker-password=${ECR_TOKEN} \
+            --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Aplicar manifiesto con la imagen real de ECR
         env:
