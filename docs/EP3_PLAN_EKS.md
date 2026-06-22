@@ -61,12 +61,11 @@ EKS Cluster (control plane administrado por AWS)
   Classic ELB usando el proveedor de nube integrado - basta con que las
   subredes públicas tengan el tag `kubernetes.io/role/elb=1` (ya están así
   en `infra/eks/main.tf`). Evita instalar Helm/el Load Balancer Controller.
-- **Un pipeline separado por componente, todos automáticos**: igual que
-  ECS, cada componente tiene su propio workflow (`cd-mysql-eks.yml`,
-  `cd-ventas-eks.yml`, `cd-despachos-eks.yml`, `cd-frontend-eks.yml`),
-  visibles por separado en la pestaña Actions. Los 3 de servicio reusan el
-  CI que ya existe para ECS; el de MySQL no tiene CI propio (imagen
-  pública) y hace de bootstrap del cluster (metrics-server + secrets).
+- **Un solo workflow, automático**: `cd-eks.yml` hace build+push de las 3
+  imágenes y deploy completo en una sola corrida, disparada con cualquier
+  push a `deploy`. Se simplificó desde un diseño inicial de 4 workflows
+  separados por componente (mysql/ventas/despachos/frontend) a uno solo,
+  para reducir puntos de falla mientras se depuraba el pipeline.
 
 ## 3. Orden de ejecución
 
@@ -105,3 +104,42 @@ vez** en la vida del proyecto:
   ```
   Kubernetes recrea el pod solo. Usa un pod de **backend**, no el de
   `mysql` (ese pierde los datos al recrearse, por no tener PVC).
+
+## 5. Problemas encontrados y cómo se resolvieron
+
+Material directo para la sección "Problemas encontrados" de la presentación
+(IE6/defensa técnica):
+
+1. **AWS Academy resetea todo al reiniciar el Lab.** Cada vez que el Lab se
+   detiene/reinicia, se borran el cluster EKS, los nodos y los repos ECR.
+   Solución: `terraform apply -target=aws_ecr_repository.this` en `infra/`
+   para recrear solo los ECR (rápido), seguido de `terraform apply` completo
+   en `infra/eks` (10-15 min) para recrear el cluster.
+
+2. **`The security token included in the request is invalid` en GitHub
+   Actions.** Las credenciales de AWS Academy son temporales (~4h) y deben
+   actualizarse como un set completo (los 3 valores juntos, del mismo
+   momento) en GitHub Secrets cada vez que se reinicia el Lab - actualizar
+   solo uno o reusar un valor de un momento distinto produce este error,
+   aunque el mismo set funcione en la terminal local.
+
+3. **Pods en `CrashLoopBackOff` y MySQL atascado en `Pending`.** Causa raíz:
+   un solo nodo (t3.medium) con poco margen de recursos, combinado con el
+   comportamiento por defecto de `RollingUpdate` en Kubernetes (`maxSurge`
+   25%, redondeado a 1 pod extra). Cuando un rollout de los backends no
+   podía completarse (porque MySQL no estaba lista), Kubernetes dejaba la
+   generación vieja Y la nueva de pods corriendo a la vez, agotando la
+   memoria/CPU del nodo y sin dejarle espacio a MySQL para programarse -
+   un ciclo que se retroalimentaba. Solución aplicada en el código
+   (`infra/k8s/backend-ventas.yml`, `backend-despachos.yml`, `frontend.yml`):
+   ```yaml
+   strategy:
+     type: RollingUpdate
+     rollingUpdate:
+       maxSurge: 0
+       maxUnavailable: 1
+   ```
+   Esto obliga a Kubernetes a apagar un pod viejo antes de crear uno nuevo
+   en cada rollout, en vez de sumar uno extra - nunca se vuelve a exceder
+   la cantidad de réplicas configurada, sin importar si una dependencia
+   (como MySQL) tarda en estar lista.

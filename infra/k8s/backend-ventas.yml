@@ -7,6 +7,16 @@ metadata:
     tier: backend
 spec:
   replicas: 2
+  # Sin esto, un rollout puede crear hasta 1 pod extra (maxSurge 25% por
+  # defecto) ademas de los 2 ya corriendo. Si ese pod nuevo nunca llega a
+  # Ready (ej: la DB no esta lista todavia), el rollout queda atascado con
+  # AMBAS generaciones de pods corriendo a la vez, agotando la capacidad
+  # del nodo y dejando sin espacio a otros pods (le paso a mysql).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: backend-ventas
