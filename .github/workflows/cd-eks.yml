@@ -1,0 +1,161 @@
+name: EKS - Build, Push y Deploy
+
+# =========================================================
+# Pipeline UNICO y automatico para la arquitectura EKS (infra/eks).
+# Se dispara con cualquier push a 'deploy' y hace TODO en una sola
+# corrida, en orden: build de las 3 imagenes -> push a ECR -> conectar
+# kubectl -> asegurar metrics-server/secrets/mysql/hpa (idempotente,
+# no rompe nada si ya existen) -> aplicar los 3 Deployments con la
+# imagen real -> esperar rollout.
+#
+# Reemplaza a los 4 workflows separados por componente
+# (cd-mysql-eks.yml, cd-ventas-eks.yml, cd-despachos-eks.yml,
+# cd-frontend-eks.yml) para simplificar mientras se depura el pipeline.
+# =========================================================
+
+on:
+  push:
+    branches: [deploy]
+  workflow_dispatch: {}
+
+concurrency:
+  group: eks-deploy
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: innovatech-eks
+  DB_NAME: innovatech
+
+jobs:
+  build-push-deploy:
+    name: "Build, Push y Deploy a EKS"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build y Push - Ventas
+        uses: docker/build-push-action@v6
+        with:
+          context: ./back-Ventas_SpringBoot/Springboot-API-REST
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.ecr-login.outputs.registry }}/innovatech-ventas:latest
+
+      - name: Build y Push - Despachos
+        uses: docker/build-push-action@v6
+        with:
+          context: ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.ecr-login.outputs.registry }}/innovatech-despachos:latest
+
+      - name: Build y Push - Frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./front_despacho
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            VITE_API_URL=
+          tags: ${{ steps.ecr-login.outputs.registry }}/innovatech-frontend:latest
+
+      - name: Instalar kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Conectar kubectl al cluster EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.CLUSTER_NAME }}
+          kubectl get nodes
+
+      - name: Instalar metrics-server (idempotente, requerido por el HPA)
+        run: |
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+          kubectl rollout status deployment/metrics-server -n kube-system --timeout=90s || true
+
+      - name: Crear/refrescar Secret de MySQL
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          kubectl create secret generic mysql-secret \
+            --from-literal=MYSQL_ROOT_PASSWORD="${DB_PASSWORD}" \
+            --from-literal=MYSQL_DATABASE="${{ env.DB_NAME }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Crear/refrescar imagePullSecret para ECR
+        run: |
+          ECR_TOKEN=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          kubectl create secret docker-registry ecr-secret \
+            --docker-server=${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com \
+            --docker-username=AWS \
+            --docker-password=${ECR_TOKEN} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Aplicar manifiestos con la imagen real de ECR
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          sed -i "s|image: innovatech-ventas:latest|image: ${ECR_REGISTRY}/innovatech-ventas:latest|g"       infra/k8s/backend-ventas.yml
+          sed -i "s|image: innovatech-despachos:latest|image: ${ECR_REGISTRY}/innovatech-despachos:latest|g" infra/k8s/backend-despachos.yml
+          sed -i "s|image: innovatech-frontend:latest|image: ${ECR_REGISTRY}/innovatech-frontend:latest|g"   infra/k8s/frontend.yml
+
+          kubectl apply -f infra/k8s/mysql.yml
+          kubectl apply -f infra/k8s/backend-ventas.yml
+          kubectl apply -f infra/k8s/backend-despachos.yml
+          kubectl apply -f infra/k8s/frontend.yml
+          kubectl apply -f infra/k8s/hpa-backends.yml
+
+      - name: Forzar rollout (re-pull de :latest en todos)
+        run: |
+          kubectl rollout restart deployment/mysql
+          kubectl rollout restart deployment/backend-ventas
+          kubectl rollout restart deployment/backend-despachos
+          kubectl rollout restart deployment/frontend
+
+      - name: Esperar rollouts
+        continue-on-error: true
+        run: |
+          kubectl rollout status deployment/mysql              --timeout=300s || true
+          kubectl rollout status deployment/backend-ventas     --timeout=300s || true
+          kubectl rollout status deployment/backend-despachos  --timeout=300s || true
+          kubectl rollout status deployment/frontend            --timeout=180s || true
+
+      - name: Estado final del cluster
+        run: |
+          echo "====== PODS ======"
+          kubectl get pods -o wide
+          echo ""
+          echo "====== SERVICES ======"
+          kubectl get services
+          echo ""
+          echo "====== HPA ======"
+          kubectl get hpa
+          echo ""
+          echo "====== METRICAS (kubectl top) ======"
+          kubectl top nodes || echo "metrics-server aun no reporta, reintenta en ~30s"
+          kubectl top pods || echo "metrics-server aun no reporta, reintenta en ~30s"
+          echo ""
+          echo "====== URL PUBLICA DEL FRONTEND ======"
+          kubectl get service frontend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+          echo ""

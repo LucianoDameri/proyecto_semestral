@@ -102,29 +102,19 @@ que solo consulta el estado de la instancia de base de datos.
    de arranque de Spring Boot, etc.).
 4. Re-ejecuta el CD manualmente (`workflow_dispatch`) una vez resuelta la causa.
 
-## Arquitectura usada para la entrega: EKS (`*-eks.yml`)
+## Arquitectura usada para la entrega: EKS (`cd-eks.yml`)
 
 El profesor pidió específicamente EKS para este proyecto (la rúbrica acepta
 ECS o EKS indistintamente, pero la entrega final es EKS). El código de ECS
 (arriba) se deja intacto en el repo como referencia, pero no se despliega.
 
-Igual que ECS, EKS tiene **un pipeline separado por componente** - se ve
-así en la pestaña Actions:
-
-| Archivo                  | Nombre en Actions    | Trigger                                    | Despliega |
-|---------------------------|------------------------|-----------------------------------------------|-----------|
-| `cd-mysql-eks.yml`       | "MySQL - CD EKS"      | push a `deploy`, o manual                     | metrics-server, secrets, MySQL, HPA |
-| `cd-ventas-eks.yml`      | "Ventas - CD EKS"     | automático tras `ci-ventas.yml`, o manual     | Deployment `backend-ventas` |
-| `cd-despachos-eks.yml`   | "Despachos - CD EKS"  | automático tras `ci-despachos.yml`, o manual  | Deployment `backend-despachos` |
-| `cd-frontend-eks.yml`    | "Frontend - CD EKS"   | automático tras `ci-frontend.yml`, o manual   | Deployment `frontend` |
-
-Los 3 CD por servicio reutilizan las MISMAS imágenes que publican
-`ci-ventas.yml`/`ci-despachos.yml`/`ci-frontend.yml` para ECS - no se tocó
-ningún workflow de CI. `cd-mysql-eks.yml` no tiene CI propio (usa la imagen
-pública `mysql:8.0`) y además hace de "bootstrap" del cluster: instala
-`metrics-server` y crea/refresca `mysql-secret` y `ecr-secret`. Cada uno de
-los otros 3 también refresca su propio `ecr-secret` al iniciar (el token
-vence cada ~12h), así no dependen de que el de MySQL haya corrido recién.
+A diferencia de ECS (separado en CI/CD por servicio), EKS usa **un solo
+workflow** (`cd-eks.yml`) que hace todo en una sola corrida automática,
+disparada con cualquier push a `deploy`: build+push de las 3 imágenes,
+conectar `kubectl`, instalar `metrics-server`, crear/refrescar `mysql-secret`
+y `ecr-secret`, aplicar los manifiestos de `infra/k8s/` y esperar los
+rollouts. Se simplificó a un solo archivo (en vez de 4 separados por
+componente) para reducir puntos de falla mientras se termina de probar.
 
 Todo es automático - **el único paso manual en la vida del proyecto** es el
 `terraform apply` inicial de `infra/eks` (crea el cluster; no se puede
