@@ -1,259 +1,490 @@
-# Innovatech Chile - Plataforma de Despachos
+# Innovatech Chile — Plataforma de Despachos
 
-> **ISY1101 - Introducción a Herramientas DevOps - Evaluación Parcial N°2**
-> Contenedorización, despliegue automatizado en AWS EC2 y CI/CD con GitHub Actions.
-
-Este repositorio presenta una solución basada en **microservicios** para la
-gestión de **ordenes de compra (Ventas)** y **ordenes de despacho (Despachos)**,
-con un frontend SPA en React y persistencia en MySQL.
+> **ISY1101 — Introducción a Herramientas DevOps**  
+> EP3 / Evaluación Final Transversal (EFT)  
+> Orquestación con AWS EKS · CI/CD con GitHub Actions · Contenedores Docker
 
 ---
 
-## Arquitectura
+## Descripción del proyecto
+
+Plataforma de microservicios para la gestión de **órdenes de compra (Ventas)** y **órdenes de despacho (Despachos)** de Innovatech Chile. Compuesta por un frontend SPA en React, dos backends Spring Boot y una base de datos MySQL, todo contenedorizado y orquestado en AWS EKS con despliegue automático vía GitHub Actions.
+
+---
+
+## Arquitectura — AWS EKS
 
 ```
-                          INTERNET
-                             |
-                             v
-         +----------------- IGW ----------------+
-         |                                      |
-         |    Subred Pública  10.0.1.0/24       |
-         |    +-----------------------------+   |
-         |    | EC2 Frontend  (IP pública)  |   |
-         |    |   docker run nginx + React  |   |
-         |    |   puerto host 80            |   |
-         |    +--------------+--------------+   |
-         |                   | red privada      |
-         |                   v                  |
-         |    Subred Privada 10.0.2.0/24        |
-         |    +-----------------------------+   |
-         |    | EC2 Backend                 |   |
-         |    |   docker run ventas    :8080|   |
-         |    |   docker run despachos :8081|   |
-         |    +--------------+--------------+   |
-         |                   | red privada      |
-         |                   v                  |
-         |    Subred Privada 10.0.3.0/24        |
-         |    +-----------------------------+   |
-         |    | EC2 Database                |   |
-         |    |   docker run mysql:8 :3306  |   |
-         |    |   volumen: innovatech_mysql_data |
-         |    +-----------------------------+   |
-         |                                      |
-         +--------------------------------------+
-                       VPC 10.0.0.0/16
+INTERNET
+   |
+   v
+[Classic ELB  :80]   ← Service type=LoadBalancer (subred pública)
+   |
+   v
+[Pod frontend  nginx:8080]
+   |    DNS interno Kubernetes
+   +---> [Service backend-ventas    ClusterIP :8080]  → [Pods x2-5]
+   +---> [Service backend-despachos ClusterIP :8081]  → [Pods x2-5]
+                                                              |
+                                                              v
+                                                    [Pod MySQL 8.0  :3306]
+
+EKS Cluster: innovatech-eks
+  VPC: 10.1.0.0/16
+    Subredes públicas:  10.1.0.0/24, 10.1.1.0/24  → ELB
+    Subredes privadas:  10.1.2.0/24, 10.1.3.0/24  → Nodos EC2
+  Node Group: 1-2 × t3.medium (desired 1 / min 1 / max 2)
+  IAM: LabRole reutilizado como cluster role + node role (Academy no permite iam:CreateRole)
+  Security Groups:
+    sg-cluster : permite 443 desde Internet (control plane)
+    sg-nodes   : permite todo el tráfico interno 10.1.0.0/16
+  HPA: CPU 50% → escala réplicas 2→5 automáticamente
 ```
 
-![Diagrama de Arquitectura](https://file.garden/ZAdhH1kUN2HXHCpM/img42.jpg)
-
-**Flujo de tráfico HTTP:**
-
+**Flujo de comunicación:**
 ```
-Usuario -> http://<EC2-Frontend-IP>/
-       -> Nginx (SPA + reverse proxy)
-            +-- /             -> archivos estáticos React
-            +-- /api/v1/ventas -> http://<EC2-Backend-IP>:8080
-            +-- /api/v1/despachos -> http://<EC2-Backend-IP>:8081
-                                       ambos -> mysql en <EC2-DB-IP>:3306
+Usuario → ELB :80 → frontend nginx → proxy inverso por DNS k8s
+  /api/v1/ventas    → backend-ventas:8080    → mysql:3306
+  /api/v1/despachos → backend-despachos:8081 → mysql:3306
 ```
-
-Solo el frontend es accesible desde internet. Backend y base de datos viven en
-subredes privadas; solo acceden a internet para `docker pull` desde ECR mediante
-NAT Gateway.
 
 ---
 
 ## Stack tecnológico
 
-| Capa               | Tecnología                                               |
-|--------------------|----------------------------------------------------------|
-| Frontend           | React 18 + Vite 5 + Tailwind 3 + axios + react-hook-form |
-| Web server         | Nginx (nginx-unprivileged 1.27 alpine, non-root)         |
-| Backend Ventas     | Java 17 + Spring Boot 3.4 + JPA + Hibernate              |
-| Backend Despachos  | Java 17 + Spring Boot 3.4 + JPA + Hibernate              |
-| Base de datos      | MySQL 8.0                                                |
-| Contenedorización  | Docker (multi-stage, non-root, healthchecks)             |
-| Orquestación local | Docker Compose                                           |
-| Infraestructura    | Terraform 1.5+ sobre AWS                                 |
-| Registry           | Amazon ECR (3 repos con scan + lifecycle)                |
-| CI/CD              | GitHub Actions                                           |
-| Deploy en EC2      | AWS Systems Manager (SSM) `send-command`                 |
+| Capa | Tecnología |
+|------|-----------|
+| Frontend | React 18 + Vite 5 + Tailwind 3 + Axios |
+| Web server | Nginx (nginx-unprivileged 1.27 alpine, non-root) |
+| Backend Ventas | Java 17 + Spring Boot 3.4 + JPA + Actuator |
+| Backend Despachos | Java 17 + Spring Boot 3.4 + JPA + Actuator |
+| Base de datos | MySQL 8.0 |
+| Contenedores | Docker (multi-stage, non-root, healthchecks) |
+| Orquestación local | Docker Compose |
+| Orquestación nube | AWS EKS (Kubernetes) |
+| Infraestructura | Terraform 1.5+ |
+| Registry | Amazon ECR (3 repos con scan automático) |
+| CI/CD | GitHub Actions (`cd-eks.yml`) |
 
 ---
 
 ## Estructura del repositorio
 
 ```
-proyecto semestral/
-|-- docker-compose.yml                # stack local completo
-|-- .env.example                      # plantilla de variables de entorno
-|-- .gitignore
-|-- README.md                         # este archivo
-|
-|-- back-Ventas_SpringBoot/Springboot-API-REST/
-|   |-- Dockerfile                    # multi-stage, JRE alpine, non-root, healthcheck
-|   |-- .dockerignore
-|   |-- pom.xml                       # Spring Boot 3.4 + Actuator
-|   `-- src/                          # código Java + application.properties
-|
-|-- back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO/
-|   |-- Dockerfile                    # mismo patrón, puerto 8081
-|   |-- .dockerignore
-|   |-- pom.xml
-|   `-- src/
-|
-|-- front_despacho/
-|   |-- Dockerfile                    # multi-stage Node + Nginx no-root
-|   |-- .dockerignore
-|   |-- nginx.conf                    # template con ${VENTAS_HOST}/${DESPACHOS_HOST}
-|   |-- vite.config.js                # proxy en dev
-|   |-- package.json
-|   `-- src/                          # componentes React + src/api/config.js
-|
-|-- infra/                            # Terraform AWS
-|   |-- main.tf  vpc.tf  security.tf  ecr.tf  ec2.tf
-|   |-- variables.tf  outputs.tf
-|   |-- terraform.tfvars.example
-|   `-- README.md                     # cómo aplicar la infra
-|
-`-- .github/workflows/                # pipelines CI/CD (1 CI + 1 CD por servicio)
-    |-- ci-ventas.yml      / cd-ventas.yml
-    |-- ci-despachos.yml   / cd-despachos.yml
-    |-- ci-frontend.yml    / cd-frontend.yml
-    |-- cd-mysql.yml                  # bootstrap manual de la BD
-    `-- README.md                     # lista de secrets + cómo configurar
+proyecto_semestral/
+├── docker-compose.yml                # Stack local completo (4 servicios)
+├── .env                              # Variables de entorno locales (no commitear)
+├── README.md
+│
+├── back-Ventas_SpringBoot/Springboot-API-REST/
+│   ├── Dockerfile                    # Multi-stage: builder Maven → runtime JRE alpine
+│   ├── .dockerignore
+│   └── src/                          # Código Java + application.properties
+│
+├── back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO/
+│   ├── Dockerfile                    # Mismo patrón, puerto 8081
+│   ├── .dockerignore
+│   └── src/
+│
+├── front_despacho/
+│   ├── Dockerfile                    # Multi-stage: Node build → nginx-unprivileged
+│   ├── .dockerignore
+│   ├── nginx.conf                    # Template con envsubst para VENTAS_HOST/DESPACHOS_HOST
+│   └── src/                          # Componentes React + config.js
+│
+├── infra/
+│   ├── main.tf  vpc.tf  security.tf  ecr.tf  ec2.tf  ecs.tf
+│   ├── eks/
+│   │   ├── main.tf                   # Cluster EKS + node group + VPC propia
+│   │   ├── variables.tf  outputs.tf
+│   │   └── terraform.tfstate
+│   └── k8s/
+│       ├── mysql.yml                 # Deployment MySQL
+│       ├── backend-ventas.yml        # Deployment + Service + maxSurge:0
+│       ├── backend-despachos.yml     # Deployment + Service + maxSurge:0
+│       ├── frontend.yml              # Deployment + Service LoadBalancer
+│       └── hpa-backends.yml          # HPA CPU 50% → 2-5 réplicas
+│
+├── docs/
+│   ├── EP3_PLAN_EKS.md              # Decisiones técnicas y arquitectura detallada
+│   └── EP3_Presentacion_Innovatech.pptx
+│
+└── .github/workflows/
+    ├── cd-eks.yml                    # Pipeline unificado EKS (build+push+deploy)
+    ├── ci-ventas.yml                 # CI tests backend Ventas
+    ├── ci-despachos.yml              # CI tests backend Despachos
+    ├── ci-frontend.yml               # CI lint/build frontend
+    ├── cd-ventas.yml                 # CD ECS backend Ventas
+    ├── cd-despachos.yml              # CD ECS backend Despachos
+    ├── cd-frontend.yml               # CD ECS frontend
+    ├── cd-mysql.yml                  # Bootstrap BD en EC2
+    └── README.md                     # Lista de secrets y configuración
 ```
 
 ---
 
-## Correr el stack localmente
+## 1. Correr el stack localmente (Docker Compose)
 
-Requisitos: **Docker Desktop**.
+**Requisitos:** Docker Desktop instalado.
 
 ```bash
-cd "proyecto semestral"
-cp .env.example .env
-# Edita .env y cambia DB_PASSWORD
+# Clonar el repo
+git clone https://github.com/<usuario>/proyecto_semestral.git
+cd proyecto_semestral
+
+# Configurar variables de entorno
+cp .env .env.local
+# Editar DB_PASSWORD en .env si es necesario
+
+# Levantar todos los servicios
 docker compose up --build
 ```
 
-Una vez levantado (~2 minutos en la primera build):
+Una vez levantado (~2 min primera vez):
 
-| Servicio              | URL                                       |
-|-----------------------|-------------------------------------------|
-| Frontend              | http://localhost:3000                     |
-| Ventas API            | http://localhost:8080/api/v1/ventas       |
-| Ventas Swagger        | http://localhost:8080/swagger-ui.html     |
-| Ventas Health         | http://localhost:8080/actuator/health     |
-| Despachos API         | http://localhost:8081/api/v1/despachos    |
-| Despachos Swagger     | http://localhost:8081/swagger-ui.html     |
-| Despachos Health      | http://localhost:8081/actuator/health     |
-| MySQL                 | localhost:3306 (root / $DB_PASSWORD)      |
+| Servicio | URL |
+|---------|-----|
+| Frontend | http://localhost:3000 |
+| Ventas API | http://localhost:8080/api/v1/ventas |
+| Ventas Swagger | http://localhost:8080/swagger-ui.html |
+| Ventas Health | http://localhost:8080/actuator/health |
+| Despachos API | http://localhost:8081/api/v1/despachos |
+| Despachos Swagger | http://localhost:8081/swagger-ui.html |
+| MySQL | localhost:3306 |
 
-Para detener: `docker compose down`. Para borrar el volumen: `docker compose down -v`.
+```bash
+# Detener
+docker compose down
+
+# Detener y borrar datos
+docker compose down -v
+```
 
 ---
 
-## Desplegar en AWS
+## 2. Desplegar en AWS EKS
 
-### 1. Infraestructura (Terraform)
+### Paso 1 — Credenciales AWS en GitHub Secrets
+
+Copiar los 3 valores **del mismo momento** desde AWS Academy → AWS Details:
+
+| Secret | Valor |
+|--------|-------|
+| `AWS_ACCESS_KEY_ID` | AccessKeyId |
+| `AWS_SECRET_ACCESS_KEY` | SecretAccessKey |
+| `AWS_SESSION_TOKEN` | SessionToken |
+| `DB_PASSWORD` | Password para MySQL (elegir uno) |
+
+> ⚠️ Las credenciales de Academy expiran en ~4h. Si el pipeline falla con "token invalid", actualizar los 3 juntos.
+
+### Paso 2 — Infraestructura Terraform (solo al crear/recrear el cluster)
 
 ```bash
+# Recrear solo ECR (rápido, si el Lab se reinició)
 cd infra
-cp terraform.tfvars.example terraform.tfvars
-# edita db_password
+terraform apply -target=aws_ecr_repository.this
+
+# Crear/recrear el cluster EKS completo (~15 min)
+cd eks
 terraform init
 terraform apply
 ```
 
-Outputs útiles:
+### Paso 3 — Disparar el pipeline
 
 ```bash
-terraform output github_secrets_summary
-```
-
-Detalles en [`infra/README.md`](infra/README.md).
-
-### 2. GitHub Secrets y Variables
-
-Configurar 4 secrets (credenciales AWS Academy + `DB_PASSWORD`) y las
-variables no sensibles (IDs de EC2, `DB_NAME`) según
-[`.github/workflows/README.md`](.github/workflows/README.md).
-
-### 3. Pipeline CI/CD
-
-Hacer push a la rama `deploy`:
-
-```bash
-git checkout -b deploy
 git push origin deploy
 ```
 
-GitHub Actions construye, publica y despliega automáticamente.
-Cualquier cambio futuro en `back-Ventas_SpringBoot/`, `back-Despachos_SpringBoot/`
-o `front_despacho/` dispara su pipeline correspondiente.
+GitHub Actions ejecuta `cd-eks.yml` automáticamente:
+1. Build de 3 imágenes Docker (linux/amd64)
+2. Push a Amazon ECR
+3. Conecta kubectl al cluster EKS
+4. Instala metrics-server (requerido por HPA)
+5. Crea/refresca `mysql-secret` y `ecr-secret`
+6. Aplica los 5 manifiestos Kubernetes
+7. Espera rollouts (~5 min)
+8. Imprime URL pública del ELB
 
-### 4. Validación
+### Paso 4 — Verificar
 
-- Frontend en `http://<EC2_FRONTEND_PUBLIC_IP>/`
-- Crear/listar ventas y despachos desde la UI
-- Verificar persistencia: `docker compose restart` o reiniciar la EC2 de DB,
-  los datos siguen ahí (named volume).
+```bash
+# Configurar kubectl local (requerido para comandos manuales)
+aws eks update-kubeconfig --name innovatech-eks --region us-east-1
+
+# Ver estado del cluster
+kubectl get nodes
+kubectl get pods -o wide
+kubectl get services
+kubectl get hpa
+
+# Ver logs de la aplicación
+kubectl logs deployment/backend-ventas --tail=50
+kubectl logs deployment/backend-despachos --tail=50
+
+# URL del frontend
+kubectl get service frontend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+
+> ⚠️ **Error "The connection to the server localhost:8080 was refused"**: kubectl no tiene configurado el cluster. Ejecutar `aws eks update-kubeconfig` del paso anterior. El pipeline lo hace automáticamente, pero en local hay que hacerlo a mano.
 
 ---
 
-## Decisiones tecnicas y justificaciones
+## 3. Contenedores — Dockerfiles
 
-### Dockerfiles
+### Patrón común (multi-stage, non-root)
 
-- **Multi-stage build**: el stage `builder` tiene Maven/Node con todas las
-  dependencias de compilacion (~600 MB); el `runtime` solo trae el binario
-  y un JRE alpine (~150 MB). Menor superficie de ataque, menor costo de
-  storage en ECR, transferencias mas rapidas.
-- **Usuario no root**: backends corren como `app` (UID 1000), frontend como
-  `nginx` (UID 101 en `nginx-unprivileged`). Si un atacante consigue RCE
-  dentro del contenedor, no tiene privilegios para escapar al host.
-- **Tini como init (`/sbin/tini --`)**: maneja SIGTERM y zombies
-  correctamente. Sin tini, Spring Boot puede quedar en estado raro al hacer
-  `docker stop`.
-- **HEALTHCHECK con Spring Actuator**: Docker sabe si la app esta UP, no
-  solo si el proceso vive. Compose espera el `service_healthy` antes de
-  iniciar dependientes.
-- **IMDSv2 obligatorio** (Terraform): bloquea SSRF abusando del metadata
-  endpoint de EC2.
+**Backends (Java 17 + Spring Boot):**
+```dockerfile
+# Stage 1: builder — Maven + JDK completo (~600 MB)
+FROM maven:3.9-eclipse-temurin-17-alpine AS builder
+WORKDIR /app
+COPY pom.xml .
+RUN mvn dependency:go-offline
+COPY src ./src
+RUN mvn package -DskipTests
 
-### Persistencia (IE3 = 10%)
+# Stage 2: runtime — solo JRE alpine (~150 MB)
+FROM eclipse-temurin:17-jre-alpine
+RUN addgroup -S app && adduser -S app -G app   # usuario no-root
+WORKDIR /app
+COPY --from=builder /app/target/*.jar app.jar
+USER app
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
 
-Se usa **named volume** (`innovatech_mysql_data`) en lugar de bind mount:
+**Frontend (Node + nginx-unprivileged):**
+```dockerfile
+# Stage 1: build React
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json .
+RUN npm ci
+COPY . .
+ARG VITE_API_URL=""
+RUN npm run build
 
-| Criterio       | Named volume          | Bind mount             |
-|----------------|-----------------------|------------------------|
-| Portabilidad   | Independiente del SO  | Dependiente del path   |
-| Rendimiento I/O| FS nativo Docker      | FS del host (mas lento)|
-| Backups        | `docker volume`       | `cp`/`tar` manual      |
-| Permisos       | Gestiona Docker       | Hay que sincronizar UID|
-| EC2/cloud      | Funciona out-of-box   | Hay que crear el path  |
+# Stage 2: nginx no-root
+FROM nginxinc/nginx-unprivileged:1.27-alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+EXPOSE 8080
+```
 
-Los datos sobreviven `docker compose down/up` y reinicios de la EC2 (el
-volumen vive en `/var/lib/docker/volumes/` del host EC2).
+### Buenas prácticas aplicadas
 
-### Pipeline CI/CD
+- **Multi-stage build**: imagen final sin herramientas de compilación (~150 MB vs ~600 MB)
+- **Usuario no-root**: backends como `app` (UID 1000), frontend como `nginx` (UID 101)
+- **Imágenes base alpine/slim**: menor superficie de ataque, menor tamaño
+- **`.dockerignore`**: excluye `target/`, `node_modules/`, `.git/` del contexto de build
+- **Healthchecks**: Spring Actuator (`/actuator/health`) verifica que la app esté UP, no solo el proceso
 
-- **3 workflows independientes** (uno por capa): cambios al frontend NO
-  rebuildean los backends. Builds mas rapidos y deploys atomicos.
-- **Trigger en `deploy`**: separa main (desarrollo) de produccion. Push a
-  main no afecta el entorno desplegado.
-- **Tags `${SHA::7}` + `latest`**: trazabilidad commit -> imagen, rollback
-  rapido a una version anterior.
-- **SSM `send-command` en lugar de SSH**: no hay claves `.pem` que rotar,
-  no hay puerto 22 abierto a internet en las EC2 privadas, IAM gestiona
-  todo. AWS Academy ya da el `LabInstanceProfile` con permisos SSM.
-- **ECR sobre Docker Hub**: integracion IAM nativa, scan de
-  vulnerabilidades incluido, sin rate limit anonimo, latencia baja desde
-  EC2.
+---
 
-### Redes y seguridad
+## 4. Registro de imágenes — Amazon ECR
 
-- 3 Security Groups encadenados (frontend -> backend -> db): cada capa solo
-  acepta trafico de la capa superior. Principio de **least privilege**.
-- Backend y DB en subredes privadas: ni
+Tres repositorios ECR con las mismas imágenes para ECS y EKS:
+
+| Repositorio | Tag | Descripción |
+|------------|-----|-------------|
+| `innovatech-ventas` | `latest` | Backend Ventas Spring Boot |
+| `innovatech-despachos` | `latest` | Backend Despachos Spring Boot |
+| `innovatech-frontend` | `latest` | Frontend React + Nginx |
+
+El pipeline reemplaza el tag `latest` con la URL real de ECR antes del `kubectl apply`:
+```bash
+sed -i "s|image: innovatech-ventas:latest|image: <account>.dkr.ecr.us-east-1.amazonaws.com/innovatech-ventas:latest|g" infra/k8s/backend-ventas.yml
+```
+
+ECR tiene scan de vulnerabilidades automático activado en cada push.
+
+---
+
+## 5. Pipeline CI/CD — GitHub Actions
+
+### Archivo: `.github/workflows/cd-eks.yml`
+
+**Trigger:** push a rama `deploy` o ejecución manual (`workflow_dispatch`)
+
+**Etapas del pipeline:**
+
+```
+Push a 'deploy'
+      │
+      ▼
+[1] Checkout + configurar credenciales AWS
+      │
+      ▼
+[2] Login a Amazon ECR
+      │
+      ▼
+[3] Build & Push 3 imágenes Docker → ECR  (~4-6 min)
+      │
+      ▼
+[4] Instalar kubectl + conectar al cluster EKS
+      │
+      ▼
+[5] Instalar metrics-server (HPA lo requiere)
+      │
+      ▼
+[6] Crear/refrescar mysql-secret + ecr-secret
+      │
+      ▼
+[7] kubectl apply — 5 manifiestos Kubernetes
+      │
+      ▼
+[8] Forzar rollout restart × 4 deployments
+      │
+      ▼
+[9] Esperar rollouts (timeout 300s)
+      │
+      ▼
+[10] Imprimir URL pública del frontend
+```
+
+**Gestión de secretos en el pipeline:**
+```yaml
+- name: Configurar credenciales AWS
+  uses: aws-actions/configure-aws-credentials@v4
+  with:
+    aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+    aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+
+- name: Crear/refrescar Secret de MySQL
+  env:
+    DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+  run: |
+    kubectl create secret generic mysql-secret \
+      --from-literal=MYSQL_ROOT_PASSWORD="${DB_PASSWORD}" \
+      --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Los secrets nunca aparecen en los logs de Actions. GitHub los enmascara automáticamente.
+
+---
+
+## 6. Configuración y Secretos
+
+### GitHub Secrets (4 en total)
+
+| Secret | Uso | Tipo |
+|--------|-----|------|
+| `AWS_ACCESS_KEY_ID` | Autenticación AWS | Credencial temporal Academy |
+| `AWS_SECRET_ACCESS_KEY` | Autenticación AWS | Credencial temporal Academy |
+| `AWS_SESSION_TOKEN` | Autenticación AWS | Credencial temporal Academy |
+| `DB_PASSWORD` | Contraseña MySQL | Permanente |
+
+### Kubernetes Secrets (2 en cluster)
+
+| Secret | Tipo | Contenido |
+|--------|------|-----------|
+| `mysql-secret` | `generic` | `MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE` |
+| `ecr-secret` | `docker-registry` | Token ECR para pull de imágenes |
+
+Los pods los consumen vía `secretKeyRef`:
+```yaml
+env:
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: mysql-secret
+        key: MYSQL_ROOT_PASSWORD
+```
+
+---
+
+## 7. Observabilidad — Logs y Métricas
+
+### CloudWatch (plano de control EKS)
+
+```
+Log group: /aws/eks/innovatech-eks/cluster
+Streams activos: 24
+Tipos: api, audit, authenticator, controllerManager, scheduler
+```
+
+Configurado en Terraform:
+```hcl
+resource "aws_eks_cluster" "main" {
+  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+}
+```
+
+### kubectl logs (aplicaciones)
+
+```bash
+# Logs Spring Boot en tiempo real
+kubectl logs deployment/backend-ventas --tail=50 -f
+
+# Logs del frontend
+kubectl logs deployment/frontend --tail=30
+```
+
+### Métricas (HPA + kubectl top)
+
+```bash
+kubectl get hpa                   # CPU actual vs umbral
+kubectl top nodes                 # CPU/RAM del nodo
+kubectl top pods                  # CPU/RAM por pod
+```
+
+---
+
+## 8. Seguridad básica
+
+| Práctica | Implementación |
+|----------|---------------|
+| Imágenes base alpine | `eclipse-temurin:17-jre-alpine`, `nginx-unprivileged:1.27-alpine` |
+| Usuario no-root | `adduser -S app` en backends, `nginx` (UID 101) en frontend |
+| Puertos mínimos | Solo 8080 (ventas), 8081 (despachos), 8080 (frontend), 3306 (mysql) |
+| Security Groups | `sg-cluster`: 443 inbound; `sg-nodes`: tráfico interno VPC solo |
+| IAM mínimo privilegio | LabRole sin permisos extra; `aws-actions` sin credenciales hardcodeadas |
+| ECR scan | Escaneo de vulnerabilidades automático en cada push |
+| Secrets | GitHub Secrets + Kubernetes Secrets, nunca hardcodeados en YAML |
+
+---
+
+## 9. Orquestación y Escalabilidad — ¿Por qué EKS?
+
+| Criterio | EC2 manual | EKS (Kubernetes) |
+|----------|-----------|-----------------|
+| Despliegue | SSH + comandos manuales | `kubectl apply` declarativo |
+| Autoscaling | Manual o scripts custom | HPA automático por CPU/memoria |
+| Auto-recuperación | Ninguna | ReplicaSet recrea pods caídos en <30s |
+| Rolling updates | Downtime durante deploy | maxSurge/maxUnavailable sin downtime |
+| Monitoreo | Logs por SSH | CloudWatch + kubectl logs centralizados |
+| Portabilidad | Solo AWS | On-premise, GKE, AKS sin cambiar manifiestos |
+
+**HPA configurado:**
+```yaml
+minReplicas: 2
+maxReplicas: 5
+metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+```
+
+Demo de autoscaling: con 500 requests paralelos, CPU llegó al 94% y el HPA escaló de 2 → 4 réplicas automáticamente en ~30 segundos.
+
+---
+
+## Ramas del repositorio
+
+| Rama | Propósito |
+|------|-----------|
+| `main` | Desarrollo, no dispara deploy |
+| `deploy` | Producción — cualquier push dispara `cd-eks.yml` |
+
+---
+
+## Integrantes
+
+- Luciano Castelli
+- Alejandro Venegas
+
+**Sección:** 302D | **Asignatura:** ISY1101 — Introducción a Herramientas DevOps
